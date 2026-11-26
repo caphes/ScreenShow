@@ -38,17 +38,19 @@ final class RemoteSession {
         final InetSocketAddress address;
         final byte[] token;
         final byte[] fingerprint;
+        final String code;
 
-        private Invitation(InetSocketAddress address, byte[] token, byte[] fingerprint) {
+        private Invitation(InetSocketAddress address, byte[] token, byte[] fingerprint, String code) {
             this.address = address;
             this.token = token;
             this.fingerprint = fingerprint;
+            this.code = code;
         }
 
         static Invitation parse(String value) {
             String code = value.trim();
-            if (!code.startsWith("SS1-") || code.length() != 87)
-                throw new IllegalArgumentException("Вставьте приглашение, которое начинается с SS1-.");
+            if ((!code.startsWith("SS1-") && !code.startsWith("SS2-")) || code.length() != 87)
+                throw new IllegalArgumentException("Вставьте приглашение ScreenShow.");
             byte[] data;
             try {
                 data = Base64.getUrlDecoder().decode(code.substring(4));
@@ -63,11 +65,15 @@ final class RemoteSession {
             try {
                 InetAddress ip = InetAddress.getByAddress(Arrays.copyOfRange(data, 0, 4));
                 return new Invitation(new InetSocketAddress(ip, port), Arrays.copyOfRange(data, 6, 30),
-                    Arrays.copyOfRange(data, 30, 62));
+                    Arrays.copyOfRange(data, 30, 62), code);
             } catch (IOException error) {
                 throw new IllegalArgumentException("В приглашении указан недопустимый адрес.", error);
             }
         }
+
+        boolean canSave() { return code.startsWith("SS2-"); }
+
+        String deviceKey() { return Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint); }
     }
 
     static final class Command {
@@ -174,7 +180,7 @@ final class RemoteSession {
                 System.arraycopy(invitation.token, 0, hello, version.length, invitation.token.length);
                 output.write(hello);
                 listener.waiting();
-                tls.setSoTimeout(38000);
+                tls.setSoTimeout(0);
                 DataInputStream input = new DataInputStream(new BufferedInputStream(tls.getInputStream()));
                 int decision = input.readUnsignedByte();
                 if (decision == 3) return false;

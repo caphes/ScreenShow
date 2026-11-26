@@ -16,7 +16,7 @@ namespace ScreenShow
         }
 
         [STAThread]
-        private static int Main()
+        private static int Main(string[] args)
         {
             try
             {
@@ -24,6 +24,7 @@ namespace ScreenShow
                 TestHost(Decision.Denied);
                 TestHost(Decision.View);
                 TestHost(Decision.Control);
+                TestPairing(Array.IndexOf(args, "--long") >= 0);
                 Console.WriteLine("PASS: TLS identity, invitation, approval, live frame, input permission and disconnect");
                 return 0;
             }
@@ -32,6 +33,125 @@ namespace ScreenShow
                 Console.Error.WriteLine(error);
                 return 1;
             }
+        }
+
+        private static void TestPairing(bool waitBeyondPreviousTimeout)
+        {
+            string folder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "pair-test-" + Guid.NewGuid().ToString("N"));
+            var store = new PairStore(folder);
+            Invitation saved;
+            try
+            {
+                using (var ready = new System.Collections.Concurrent.BlockingCollection<Invitation>())
+                {
+                    var host = new HostSession(IPAddress.Loopback, 0, store);
+                    int approvals = 0;
+                    Task worker = Task.Run(() => host.Run(ready.Add, (address, cancellation) =>
+                    {
+                        if (++approvals == 1 && waitBeyondPreviousTimeout)
+                            Task.Delay(31500, cancellation).GetAwaiter().GetResult();
+                        return Decision.View;
+                    }, access => { }));
+                    try
+                    {
+                        Invitation invite;
+                        Check(ready.TryTake(out invite, 10000), "No initial pairing code.");
+                        saved = Invitation.Parse(invite.ToString());
+                        Check(saved.Paired && !store.HasIncoming(saved.Token), "An unapproved device was saved.");
+                        ViewPaired(saved, () => store.SaveOutgoing(saved));
+                        Check(ready.TryTake(out invite, 10000) && !Protocol.Same(saved.Token, invite.Token),
+                            "The unused invitation was not rotated after pairing.");
+                        var reopened = new PairStore(folder);
+                        Check(reopened.HasIncoming(saved.Token) && reopened.Devices(false).Length == 1,
+                            "Pairing was not saved on both ends.");
+                        ViewPaired(reopened.Devices(false)[0].Invitation, () => { });
+                        Check(ready.TryTake(out invite, 10000) && approvals == 2,
+                            "Reconnection did not ask for approval.");
+                    }
+                    finally
+                    {
+                        host.Stop();
+                        WaitForHostStop(worker);
+                    }
+                }
+
+                CheckRestartAndRevocation(new PairStore(folder), saved);
+                Console.WriteLine("PASS: persistent pairing, reconnect with approval, stable identity and revocation");
+                if (waitBeyondPreviousTimeout) Console.WriteLine("PASS: approval after the previous 30-second limit");
+            }
+            finally
+            {
+                if (Directory.Exists(folder))
+                {
+                    foreach (string file in Directory.GetFiles(folder)) File.Delete(file);
+                    Directory.Delete(folder);
+                }
+            }
+        }
+
+        private static void CheckRestartAndRevocation(PairStore recovered, Invitation saved)
+        {
+            using (var ready = new System.Collections.Concurrent.BlockingCollection<Invitation>())
+            {
+                var host = new HostSession(IPAddress.Loopback, 0, recovered);
+                Task worker = Task.Run(() => host.Run(ready.Add, (address, cancellation) => Decision.View, access => { }));
+                try
+                {
+                    Invitation fresh;
+                    Check(ready.TryTake(out fresh, 10000) && Protocol.Same(saved.Fingerprint, fresh.Fingerprint),
+                        "Server identity changed after reopening.");
+                    var previous = new Invitation(fresh.Endpoint, saved.Token, saved.Fingerprint, true);
+                    ViewPaired(previous, () => { });
+                    Check(ready.TryTake(out fresh, 10000), "Restarted host did not return to waiting.");
+                    recovered.Remove(recovered.Devices(true)[0]);
+                    using (var client = new TcpClient())
+                    {
+                        client.Connect(previous.Endpoint);
+                        using (var stream = Protocol.OpenViewer(client, previous))
+                        {
+                            Protocol.WriteHello(stream, previous);
+                            Check(stream.ReadByte() == (byte)Decision.InvalidCode, "Revoked pairing is still authorized.");
+                        }
+                    }
+                }
+                finally
+                {
+                    host.Stop();
+                    WaitForHostStop(worker);
+                }
+            }
+        }
+
+        private static void WaitForHostStop(Task worker)
+        {
+            try { Check(worker.Wait(10000), "Host did not stop."); }
+            catch (AggregateException error)
+            {
+                if (!(error.GetBaseException() is SocketException) && !(error.GetBaseException() is OperationCanceledException))
+                    throw;
+            }
+        }
+
+        private static void ViewPaired(Invitation invite, Action approved)
+        {
+            var viewer = new ViewerSession(invite);
+            bool received = false;
+            try
+            {
+                viewer.Run(() => { }, access =>
+                {
+                    Check(access == Decision.View, "Unexpected pairing permission.");
+                    approved();
+                }, frame =>
+                {
+                    using (frame) CheckFrame(frame);
+                    received = true;
+                    viewer.Stop();
+                });
+            }
+            catch (IOException) { if (!received) throw; }
+            catch (ObjectDisposedException) { if (!received) throw; }
+            Check(received, "Paired viewer received no frame.");
         }
 
         private static void CheckInput()

@@ -65,7 +65,7 @@ namespace ScreenShow
             {
                 using (var certificate = Protocol.MakeCertificate())
                 {
-                    var invite = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate);
+                    var invite = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, !legacy);
                     Task worker = Task.Run(delegate
                     {
                         if (legacy)

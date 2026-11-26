@@ -32,12 +32,15 @@ namespace ScreenShow
         private readonly TextBox otherCode;
         private readonly Button connect;
         private readonly Button paste;
+        private readonly Button devices;
+        private readonly PairStore pairs = new PairStore();
         private readonly Label status;
         private readonly Panel approval;
         private readonly Label prompt;
         private HostSession host;
         private ViewerSession guest;
         private ViewerForm viewer;
+        private Form deviceList;
         private TaskCompletionSource<Decision> pendingApproval;
         private bool hotkey;
         private bool cancelled;
@@ -67,7 +70,7 @@ namespace ScreenShow
 
             var share = Theme.Put(this, new Panel { BackColor = Theme.Panel }, 24, 123, 366, 270);
             Theme.Put(share, Theme.Label("Показать мой экран", 15, bold: true), 17, 13, 332, 32);
-            Theme.Put(share, Theme.Label("Выберите сеть и отправьте приглашение.", 9.5f, Theme.Muted), 18, 51, 334, 24);
+            Theme.Put(share, Theme.Label("Откройте доступ для своих устройств.", 9.5f, Theme.Muted), 18, 51, 334, 24);
             Theme.Put(share, Theme.Label("Сетевой адрес", 9, Theme.Muted), 18, 84, 230, 21);
             Theme.Put(share, Theme.Label("Порт", 9, Theme.Muted), 268, 84, 80, 21);
             adapter = Theme.Put(share, new ComboBox
@@ -85,7 +88,7 @@ namespace ScreenShow
             ownCode.ReadOnly = true;
             ownCode.AccessibleName = "Ваше приглашение";
             copy = Theme.Put(share, Theme.Button("Копировать"), 249, 171, 99, 31);
-            create = Theme.Put(share, Theme.Button("Создать приглашение", true), 18, 216, 211, 37);
+            create = Theme.Put(share, Theme.Button("Открыть доступ", true), 18, 216, 211, 37);
             stop = Theme.Put(share, Theme.Button("Остановить"), 238, 216, 110, 37);
             stop.ForeColor = Theme.Red;
 
@@ -98,9 +101,10 @@ namespace ScreenShow
             otherCode.MaxLength = 256;
             otherCode.AccessibleName = "Код приглашения";
             paste = Theme.Put(join, Theme.Button("Вставить"), 262, 123, 86, 31);
-            Theme.Put(join, Theme.Label("Перед началом сеанса владелец подтвердит доступ на своём компьютере.",
+            Theme.Put(join, Theme.Label("Код нужен при первой привязке. Каждый сеанс подтверждается на ПК.",
                 9.5f, Theme.Muted), 18, 164, 330, 43);
-            connect = Theme.Put(join, Theme.Button("Подключиться", true), 18, 216, 330, 37);
+            connect = Theme.Put(join, Theme.Button("Подключиться", true), 18, 216, 168, 37);
+            devices = Theme.Put(join, Theme.Button("Устройства…"), 196, 216, 152, 37);
 
             status = Theme.Put(this, Theme.Label("Готово к подключению", 10, Theme.Muted), 25, 411, 750, 31);
             status.TextAlign = ContentAlignment.MiddleLeft;
@@ -116,10 +120,12 @@ namespace ScreenShow
 
             foreach (var item in NetworkAddresses()) adapter.Items.Add(item);
             if (adapter.Items.Count != 0) adapter.SelectedIndex = 0;
+            RestoreHostAddress();
             create.Click += (sender, args) => StartHost();
             copy.Click += (sender, args) => UseClipboard(() => Clipboard.SetText(ownCode.Text), "Приглашение скопировано.");
             stop.Click += (sender, args) => StopSession();
             connect.Click += (sender, args) => Join();
+            devices.Click += (sender, args) => ShowDevices();
             paste.Click += (sender, args) => UseClipboard(() => { if (Clipboard.ContainsText()) otherCode.Text = Clipboard.GetText().Trim(); });
             otherCode.TextChanged += (sender, args) => UpdateControls();
             otherCode.KeyDown += (sender, args) =>
@@ -175,6 +181,7 @@ namespace ScreenShow
         {
             bool idle = host == null && guest == null;
             adapter.Enabled = port.Enabled = idle;
+            devices.Enabled = idle || (host != null && ownCode.TextLength != 0 && !cancelled);
             create.Enabled = idle && adapter.SelectedItem != null;
             copy.Enabled = ownCode.TextLength != 0 && !cancelled;
             stop.Enabled = !idle && !cancelled;
@@ -191,17 +198,25 @@ namespace ScreenShow
         private void StartHost()
         {
             var address = (Adapter)adapter.SelectedItem;
-            var session = new HostSession(address.Address, (int)port.Value);
+            var endpoint = new IPEndPoint(address.Address, (int)port.Value);
+            var session = new HostSession(endpoint.Address, endpoint.Port, pairs);
             host = session;
             cancelled = false;
             SetStatus("Создаём защищённое приглашение…", Theme.Accent);
             UpdateControls();
             Run(
-                () => session.Run(invitation => Post(() =>
+                () =>
+                {
+                    pairs.HostAddress = endpoint.ToString();
+                    session.Run(invitation => Post(() =>
                     {
                         if (cancelled) return;
+                        Answer(Decision.Denied);
+                        TopMost = false;
+                        if (hotkey) Native.UnregisterHotKey(Handle, StopHotkey);
+                        hotkey = false;
                         ownCode.Text = invitation.ToString();
-                        SetStatus("Приглашение готово. Ожидаем подключение.", Theme.Success);
+                        SetStatus("Доступ открыт. Связанные устройства могут подключиться.", Theme.Success);
                         UpdateControls();
                     }),
                     RequestApproval,
@@ -214,7 +229,8 @@ namespace ScreenShow
                         string mode = access == Decision.Control ? "Просмотр и управление" : "Только просмотр";
                         SetStatus("Экран транслируется   ·   " + mode +
                             (hotkey ? "   ·   Ctrl+Alt+F12 для остановки" : "   ·   Нажмите «Остановить» для выхода"), Theme.Success);
-                    })),
+                    }));
+                },
                 error =>
                 {
                     host = null;
@@ -232,18 +248,18 @@ namespace ScreenShow
             var request = new TaskCompletionSource<Decision>();
             Post(() =>
             {
-                if (cancelled || request.Task.IsCompleted) return;
+                if (cancelled || cancellation.IsCancellationRequested || request.Task.IsCompleted) return;
+                if (deviceList != null) deviceList.Close();
                 pendingApproval = request;
                 ownCode.Clear();
-                prompt.Text = "Запрос от " + peer.Address + "\r\nНа ответ даётся 30 секунд.";
+                prompt.Text = "Запрос на доступ от " + peer.Address;
                 approval.Visible = true;
                 WindowState = FormWindowState.Normal;
                 Activate();
                 SetStatus("Подтвердите подключение на этом компьютере.", Theme.Accent);
                 UpdateControls();
             });
-            if (!request.Task.Wait(Protocol.ApprovalTimeout, cancellation))
-                request.TrySetResult(Decision.Expired);
+            request.Task.Wait(cancellation);
             return request.Task.Result;
         }
 
@@ -263,6 +279,11 @@ namespace ScreenShow
                 SetStatus(error.Message, Theme.Red);
                 return;
             }
+            Join(invitation);
+        }
+
+        private void Join(Invitation invitation)
+        {
             var session = new ViewerSession(invitation);
             guest = session;
             cancelled = false;
@@ -276,13 +297,17 @@ namespace ScreenShow
                 {
                     if (!cancelled) SetStatus("Ожидаем подтверждение на втором компьютере…", Theme.Accent);
                 }),
-                access => Post(() =>
+                access =>
                 {
-                    if (cancelled) return;
-                    otherCode.Clear();
-                    SetStatus("Сеанс открыт в отдельном окне.", Theme.Success);
-                    window.Start(access == Decision.Control);
-                }),
+                    if (invitation.Paired) pairs.SaveOutgoing(invitation);
+                    Post(() =>
+                    {
+                        if (cancelled) return;
+                        otherCode.Clear();
+                        SetStatus("Сеанс открыт в отдельном окне.", Theme.Success);
+                        window.Start(access == Decision.Control);
+                    });
+                },
                 window.Submit),
                 error =>
                 {
@@ -291,6 +316,70 @@ namespace ScreenShow
                     window.Dispose();
                     Finish(error);
                 });
+        }
+
+        private void RestoreHostAddress()
+        {
+            try
+            {
+                string[] endpoint = pairs.HostAddress.Split(':');
+                int value;
+                if (endpoint.Length != 2 || !int.TryParse(endpoint[1], out value) ||
+                    value < port.Minimum || value > port.Maximum) return;
+                port.Value = value;
+                foreach (Adapter item in adapter.Items)
+                    if (item.Address.ToString() == endpoint[0]) { adapter.SelectedItem = item; break; }
+            }
+            catch (IOException) { }
+            catch (System.Security.Cryptography.CryptographicException) { }
+        }
+
+        private void ShowDevices()
+        {
+            try
+            {
+                using (var window = new Form())
+                {
+                    window.Text = "Связанные устройства";
+                    window.StartPosition = FormStartPosition.CenterParent;
+                    window.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    window.ClientSize = new Size(490, 309);
+                    window.MinimizeBox = window.MaximizeBox = false;
+                    window.BackColor = Theme.Background;
+                    Theme.Put(window, Theme.Label("Компьютеры для подключения", bold: true), 14, 14, 220, 24);
+                    Theme.Put(window, Theme.Label("Устройства с привязкой к этому ПК", bold: true), 252, 14, 225, 24);
+                    var outgoing = Theme.Put(window, new ListBox { BackColor = Theme.Field, ForeColor = Theme.Ink }, 14, 43, 224, 205);
+                    var incoming = Theme.Put(window, new ListBox { BackColor = Theme.Field, ForeColor = Theme.Ink }, 252, 43, 224, 205);
+                    outgoing.Items.AddRange(pairs.Devices(false));
+                    incoming.Items.AddRange(pairs.Devices(true));
+                    var open = Theme.Put(window, Theme.Button("Подключиться", true), 14, 259, 119, 36);
+                    var removeOut = Theme.Put(window, Theme.Button("Забыть"), 142, 259, 96, 36);
+                    var removeIn = Theme.Put(window, Theme.Button("Отвязать"), 252, 259, 113, 36);
+                    open.Enabled = removeOut.Enabled = removeIn.Enabled = false;
+                    outgoing.SelectedIndexChanged += (sender, args) =>
+                    {
+                        removeOut.Enabled = outgoing.SelectedIndex >= 0;
+                        open.Enabled = removeOut.Enabled && host == null;
+                    };
+                    incoming.SelectedIndexChanged += (sender, args) => removeIn.Enabled = incoming.SelectedIndex >= 0;
+                    PairedDevice selected = null;
+                    open.Click += (sender, args) => { selected = (PairedDevice)outgoing.SelectedItem; window.Close(); };
+                    Action<ListBox> remove = list =>
+                    {
+                        var device = (PairedDevice)list.SelectedItem;
+                        if (device == null) return;
+                        try { pairs.Remove(device); list.Items.Remove(device); }
+                        catch (IOException) { MessageBox.Show(window, "Не удалось удалить привязку.", "ScreenShow"); }
+                    };
+                    removeOut.Click += (sender, args) => remove(outgoing);
+                    removeIn.Click += (sender, args) => remove(incoming);
+                    deviceList = window;
+                    try { window.ShowDialog(this); }
+                    finally { deviceList = null; }
+                    if (selected != null) Join(selected.Invitation);
+                }
+            }
+            catch (IOException error) { SetStatus(error.Message, Theme.Red); }
         }
 
         private void Run(Action action, Action<Exception> finished)

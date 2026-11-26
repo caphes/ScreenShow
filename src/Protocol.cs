@@ -14,26 +14,29 @@ namespace ScreenShow
     internal sealed class Invitation
     {
         private const string Prefix = "SS1-";
+        private const string PairPrefix = "SS2-";
         internal const int TokenSize = 24;
         internal const int FingerprintSize = 32;
         private const int Size = 4 + 2 + TokenSize + FingerprintSize;
         internal readonly IPEndPoint Endpoint;
         internal readonly byte[] Token;
         internal readonly byte[] Fingerprint;
+        internal readonly bool Paired;
 
-        internal Invitation(IPEndPoint endpoint, byte[] token, byte[] fingerprint)
+        internal Invitation(IPEndPoint endpoint, byte[] token, byte[] fingerprint, bool paired = false)
         {
             Endpoint = endpoint;
             Token = token;
             Fingerprint = fingerprint;
+            Paired = paired;
         }
 
-        internal static Invitation Create(IPEndPoint endpoint, X509Certificate2 certificate)
+        internal static Invitation Create(IPEndPoint endpoint, X509Certificate2 certificate, bool paired = false)
         {
             var token = new byte[TokenSize];
             using (var random = RandomNumberGenerator.Create())
                 random.GetBytes(token);
-            return new Invitation(endpoint, token, Protocol.Fingerprint(certificate));
+            return new Invitation(endpoint, token, Protocol.Fingerprint(certificate), paired);
         }
 
         public override string ToString()
@@ -44,15 +47,16 @@ namespace ScreenShow
             data[5] = (byte)Endpoint.Port;
             Token.CopyTo(data, 6);
             Fingerprint.CopyTo(data, 6 + TokenSize);
-            return Prefix + Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            return (Paired ? PairPrefix : Prefix) + Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         }
 
         internal static Invitation Parse(string text)
         {
             text = text.Trim();
             int encodedLength = (Size * 8 + 5) / 6;
-            if (text.Length != Prefix.Length + encodedLength || !text.StartsWith(Prefix, StringComparison.Ordinal))
-                throw new FormatException("Проверьте код приглашения. Он начинается с SS1-.");
+            bool paired = text.StartsWith(PairPrefix, StringComparison.Ordinal);
+            if (text.Length != Prefix.Length + encodedLength || (!paired && !text.StartsWith(Prefix, StringComparison.Ordinal)))
+                throw new FormatException("Проверьте код приглашения ScreenShow.");
 
             byte[] data;
             try
@@ -74,7 +78,7 @@ namespace ScreenShow
             var fingerprint = new byte[FingerprintSize];
             Array.Copy(data, 6, token, 0, token.Length);
             Array.Copy(data, 6 + token.Length, fingerprint, 0, fingerprint.Length);
-            return new Invitation(new IPEndPoint(ip, port), token, fingerprint);
+            return new Invitation(new IPEndPoint(ip, port), token, fingerprint, paired);
         }
     }
 
@@ -86,12 +90,23 @@ namespace ScreenShow
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SSH1");
         private static readonly byte[] MobileMagic = Encoding.ASCII.GetBytes("SSM1");
         internal const int NetworkTimeout = 8000;
-        internal const int ApprovalTimeout = 30000;
         internal const int MaximumFrame = 4 * 1024 * 1024;
         internal const int FrameWidth = 1600;
         internal const int FrameHeight = 1000;
 
         internal static X509Certificate2 MakeCertificate()
+        {
+            var pfx = MakeCertificateData(2);
+            try { return LoadCertificate(pfx); }
+            finally { Array.Clear(pfx, 0, pfx.Length); }
+        }
+
+        internal static X509Certificate2 LoadCertificate(byte[] pfx)
+        {
+            return new X509Certificate2(pfx, (string)null, X509KeyStorageFlags.UserKeySet);
+        }
+
+        internal static byte[] MakeCertificateData(int days)
         {
             using (var key = new RSACng(2048))
             {
@@ -100,15 +115,8 @@ namespace ScreenShow
                 request.CertificateExtensions.Add(new X509KeyUsageExtension(
                     X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
                 using (var temporary = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1),
-                    DateTimeOffset.UtcNow.AddDays(2)))
-                {
-                    var pfx = temporary.Export(X509ContentType.Pfx);
-                    try
-                    {
-                        return new X509Certificate2(pfx, (string)null, X509KeyStorageFlags.UserKeySet);
-                    }
-                    finally { Array.Clear(pfx, 0, pfx.Length); }
-                }
+                    DateTimeOffset.UtcNow.AddDays(days)))
+                    return temporary.Export(X509ContentType.Pfx);
             }
         }
 
@@ -168,10 +176,15 @@ namespace ScreenShow
 
         internal static bool CheckHello(BinaryReader reader, Invitation invitation, out bool mobile)
         {
+            var token = ReadHello(reader, out mobile);
+            return token != null && Same(token, invitation.Token);
+        }
+
+        internal static byte[] ReadHello(BinaryReader reader, out bool mobile)
+        {
             var version = ReadExact(reader, Magic.Length);
             mobile = Same(version, MobileMagic);
-            return (mobile || Same(version, Magic)) &&
-                Same(ReadExact(reader, Invitation.TokenSize), invitation.Token);
+            return mobile || Same(version, Magic) ? ReadExact(reader, Invitation.TokenSize) : null;
         }
 
         internal static void WriteFrame(BinaryWriter writer, byte[] jpeg)

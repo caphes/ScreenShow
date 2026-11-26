@@ -26,16 +26,21 @@ namespace ScreenShow
             StartPosition = FormStartPosition.CenterScreen;
             Size resolution = Screen.PrimaryScreen.WorkingArea.Size;
             ClientSize = new Size(Math.Min(1120, resolution.Width - 60), Math.Min(770, resolution.Height - 80));
-            MinimumSize = new Size(590, 300);
+            MinimumSize = new Size(700, 300);
             AutoScaleDimensions = new SizeF(96, 96);
             AutoScaleMode = AutoScaleMode.Dpi;
 
             var bar = new Panel { Dock = DockStyle.Top, Height = 57, BackColor = Theme.Panel };
-            mode = Theme.Put(bar, Theme.Label("", 10, Theme.Accent, true), 16, 8, 270, 36);
+            mode = Theme.Put(bar, Theme.Label("", 10, Theme.Accent, true), 16, 8, 155, 36);
             mode.TextAlign = ContentAlignment.MiddleLeft;
+            var zoomOut = Theme.Put(bar, Theme.Button("−"), 170, 11, 34, 35);
+            var zoomIn = Theme.Put(bar, Theme.Button("+"), 209, 11, 34, 35);
+            var reset = Theme.Put(bar, Theme.Button("По размеру"), 248, 11, 108, 35);
+            zoomOut.AccessibleName = "Уменьшить экран";
+            zoomIn.AccessibleName = "Приблизить экран";
             var buttons = new FlowLayoutPanel
             {
-                Dock = DockStyle.Right, Width = 425, FlowDirection = FlowDirection.RightToLeft,
+                Dock = DockStyle.Right, Width = 314, FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false, Padding = new Padding(0, 8, 8, 0)
             };
             var disconnect = Theme.Button("Отключиться");
@@ -44,7 +49,8 @@ namespace ScreenShow
             input = Theme.Button("Включить ввод", true);
             foreach (var button in new[] { disconnect, fullscreen, input })
             {
-                button.Size = new Size(131, 35);
+                button.Size = new Size(96, 35);
+                button.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
                 buttons.Controls.Add(button);
             }
             bar.Controls.Add(buttons);
@@ -53,6 +59,9 @@ namespace ScreenShow
             Controls.Add(bar);
 
             disconnect.Click += (sender, args) => Close();
+            zoomOut.Click += (sender, args) => surface.Zoom(1 / 1.25);
+            zoomIn.Click += (sender, args) => surface.Zoom(1.25);
+            reset.Click += (sender, args) => surface.ResetZoom();
             fullscreen.Click += (sender, args) => ToggleFullscreen();
             input.Click += (sender, args) =>
             {
@@ -146,6 +155,9 @@ namespace ScreenShow
         private Bitmap image;
         private int heldButtons;
         private bool controlling;
+        private double zoom = 1, panX, panY;
+        private bool panning;
+        private Point dragPoint;
 
         internal ScreenSurface(ViewerSession session)
         {
@@ -179,9 +191,34 @@ namespace ScreenShow
         {
             if (image == null || Width == 0 || Height == 0) return Rectangle.Empty;
             double scale = Math.Min((double)Width / image.Width, (double)Height / image.Height);
-            int width = Math.Max(1, (int)(image.Width * scale));
-            int height = Math.Max(1, (int)(image.Height * scale));
-            return new Rectangle((Width - width) / 2, (Height - height) / 2, width, height);
+            int width = Math.Max(1, (int)(image.Width * scale * zoom));
+            int height = Math.Max(1, (int)(image.Height * scale * zoom));
+            double limitX = Math.Max(0, (width - Width) / 2.0);
+            double limitY = Math.Max(0, (height - Height) / 2.0);
+            panX = Math.Max(-limitX, Math.Min(limitX, panX));
+            panY = Math.Max(-limitY, Math.Min(limitY, panY));
+            return new Rectangle((int)Math.Round((Width - width) / 2.0 + panX),
+                (int)Math.Round((Height - height) / 2.0 + panY), width, height);
+        }
+
+        internal void Zoom(double factor, Point? anchor = null)
+        {
+            Rectangle before = ImageBounds();
+            double next = Math.Min(5, Math.Max(1, zoom * factor));
+            if (before.IsEmpty || next == zoom) return;
+            Point focus = anchor ?? new Point(Width / 2, Height / 2);
+            zoom = next;
+            Rectangle after = ImageBounds();
+            panX += focus.X - (after.X + (focus.X - before.X) * (double)after.Width / before.Width);
+            panY += focus.Y - (after.Y + (focus.Y - before.Y) * (double)after.Height / before.Height);
+            Invalidate();
+        }
+
+        internal void ResetZoom()
+        {
+            zoom = 1;
+            panX = panY = 0;
+            Invalidate();
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -222,6 +259,14 @@ namespace ScreenShow
         protected override void OnMouseDown(MouseEventArgs e)
         {
             Focus();
+            if (e.Button == MouseButtons.Left && zoom > 1 && (!controlling || (ModifierKeys & Keys.Shift) != 0))
+            {
+                Release();
+                panning = true;
+                dragPoint = e.Location;
+                Capture = true;
+                return;
+            }
             int button = ButtonNumber(e.Button);
             if (button != 0 && SendPointer(InputKind.Button, e.Location, button | 256, false))
             {
@@ -233,6 +278,12 @@ namespace ScreenShow
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
+            if (panning && e.Button == MouseButtons.Left)
+            {
+                panning = false;
+                Capture = false;
+                return;
+            }
             int button = ButtonNumber(e.Button);
             if ((heldButtons & (1 << button)) != 0)
             {
@@ -245,18 +296,32 @@ namespace ScreenShow
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
+            if (panning)
+            {
+                panX += e.X - dragPoint.X;
+                panY += e.Y - dragPoint.Y;
+                dragPoint = e.Location;
+                Invalidate();
+                return;
+            }
             if (Focused) SendPointer(InputKind.MouseMove, e.Location, 0, heldButtons != 0);
             base.OnMouseMove(e);
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
+            if (!controlling || (ModifierKeys & Keys.Control) != 0)
+            {
+                Zoom(Math.Pow(1.25, e.Delta / 120.0), e.Location);
+                return;
+            }
             if (Focused) SendPointer(InputKind.Wheel, e.Location, Math.Max(-1200, Math.Min(1200, e.Delta)), false);
             base.OnMouseWheel(e);
         }
 
         protected override void OnMouseCaptureChanged(EventArgs e)
         {
+            if (!Capture) panning = false;
             if (!Capture && heldButtons != 0) Release();
             base.OnMouseCaptureChanged(e);
         }
@@ -291,6 +356,7 @@ namespace ScreenShow
         {
             if (controlling) session.Queue(new InputCommand(InputKind.ReleaseAll));
             heldButtons = 0;
+            panning = false;
             if (Capture) Capture = false;
         }
 

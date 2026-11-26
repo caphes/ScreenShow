@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -32,6 +33,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Comparator;
 
 public final class MainActivity extends Activity {
     private static final int BACKGROUND = Color.rgb(12, 26, 20);
@@ -51,6 +54,7 @@ public final class MainActivity extends Activity {
     private ViewConnection active;
     private RemoteScreen screen;
     private AlertDialog dialog;
+    private final ArrayList<Button> devices = new ArrayList<>();
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -73,6 +77,7 @@ public final class MainActivity extends Activity {
     private void home(String message, boolean error) {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         root.removeAllViews();
+        devices.clear();
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         FrameLayout center = new FrameLayout(this);
@@ -110,13 +115,13 @@ public final class MainActivity extends Activity {
         card.setPadding(dp(19), dp(19), dp(19), dp(18));
         add(content, card, 20);
         add(card, label("Подключиться к ПК", 22, INK, true), 0);
-        add(card, label("Вставьте приглашение из ScreenShow на компьютере Windows.", 15, MUTED, false), 8);
+        add(card, label("Вставьте код из ScreenShow на ПК, чтобы связать устройства.", 15, MUTED, false), 8);
 
         add(card, label("Код приглашения", 14, MUTED, true), 20);
         code = new EditText(this);
         code.setTextColor(INK);
         code.setHintTextColor(MUTED);
-        code.setHint("SS1-…");
+        code.setHint("SS2-…");
         code.setTextSize(16);
         code.setSingleLine(true);
         code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -152,6 +157,40 @@ public final class MainActivity extends Activity {
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(content, status, 14);
         setStatus(message, error);
+        addDevices(content);
+    }
+
+    private SharedPreferences pairing() {
+        return getSharedPreferences("screen_show_pairing", MODE_PRIVATE);
+    }
+
+    private void addDevices(LinearLayout content) {
+        ArrayList<RemoteSession.Invitation> saved = new ArrayList<>();
+        for (Object value : pairing().getAll().values()) {
+            if (value instanceof String) {
+                try { saved.add(RemoteSession.Invitation.parse((String) value)); }
+                catch (IllegalArgumentException ignored) { }
+            }
+        }
+        if (saved.isEmpty()) return;
+        saved.sort(Comparator.comparing(invite -> invite.address.toString()));
+        add(content, label("Связанные компьютеры", 18, INK, true), 17);
+        for (RemoteSession.Invitation invitation : saved) {
+            LinearLayout row = new LinearLayout(this);
+            Button open = button(invitation.address.getAddress().getHostAddress() + ":" + invitation.address.getPort(),
+                false, INK);
+            open.setOnClickListener(view -> connect(invitation));
+            Button remove = button("Забыть", false, DANGER);
+            remove.setOnClickListener(view -> {
+                pairing().edit().remove(invitation.deviceKey()).apply();
+                home("", false);
+            });
+            rowButton(row, open, 0, 2.2f);
+            rowButton(row, remove, 8, 1f);
+            devices.add(open);
+            devices.add(remove);
+            add(content, row, 7);
+        }
     }
 
     private void paste() {
@@ -176,6 +215,11 @@ public final class MainActivity extends Activity {
             setStatus(error.getMessage(), true);
             return;
         }
+        connect(invitation);
+    }
+
+    private void connect(RemoteSession.Invitation invitation) {
+        if (active != null) return;
         getSystemService(InputMethodManager.class).hideSoftInputFromWindow(code.getWindowToken(), 0);
         active = new ViewConnection(invitation);
         setPending(true);
@@ -196,7 +240,14 @@ public final class MainActivity extends Activity {
         toolbar.setBackgroundColor(PANEL);
         toolbar.setPadding(dp(10), dp(6), dp(10), dp(8));
         TextView mode = label(canControl ? "Просмотр · ввод выключен" : "Только просмотр", 13, ACCENT, true);
-        toolbar.addView(mode);
+        LinearLayout viewOptions = new LinearLayout(this);
+        viewOptions.setGravity(Gravity.CENTER_VERTICAL);
+        viewOptions.addView(mode, new LinearLayout.LayoutParams(0, -2, 1));
+        Button reset = button("По размеру", false, INK);
+        reset.setContentDescription("Уместить экран целиком");
+        reset.setOnClickListener(view -> screen.resetZoom());
+        viewOptions.addView(reset, new LinearLayout.LayoutParams(dp(110), -2));
+        toolbar.addView(viewOptions);
         LinearLayout actions = new LinearLayout(this);
         Button close = button("Отключиться", false, DANGER);
         close.setOnClickListener(view -> disconnect("Сеанс завершён."));
@@ -285,6 +336,7 @@ public final class MainActivity extends Activity {
         code.setEnabled(!pending);
         paste.setEnabled(!pending);
         join.setEnabled(!pending);
+        for (Button device : devices) device.setEnabled(!pending);
         cancel.setVisibility(pending ? View.VISIBLE : View.GONE);
     }
 
@@ -386,10 +438,12 @@ public final class MainActivity extends Activity {
 
     private final class ViewConnection implements RemoteSession.Listener {
         private final RemoteSession remote;
+        private final RemoteSession.Invitation invitation;
         private Bitmap pendingFrame;
         private boolean posted, closed;
 
         private ViewConnection(RemoteSession.Invitation invitation) {
+            this.invitation = invitation;
             remote = new RemoteSession(invitation, this);
         }
 
@@ -400,7 +454,11 @@ public final class MainActivity extends Activity {
         }
 
         @Override public void connected(boolean control, boolean text) {
-            ui.post(() -> { if (active == this) showViewer(this, control, text); });
+            ui.post(() -> {
+                if (active != this) return;
+                if (invitation.canSave()) pairing().edit().putString(invitation.deviceKey(), invitation.code).apply();
+                showViewer(this, control, text);
+            });
         }
 
         @Override public void frame(byte[] jpeg) throws IOException {

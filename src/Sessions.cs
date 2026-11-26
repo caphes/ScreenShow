@@ -16,12 +16,14 @@ namespace ScreenShow
         private readonly TcpListener listener;
         private readonly object gate = new object();
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+        private readonly PairStore pairs;
         private TcpClient peer;
 
-        internal HostSession(IPAddress address, int port)
+        internal HostSession(IPAddress address, int port, PairStore pairs = null)
         {
             listener = new TcpListener(address, port);
             listener.ExclusiveAddressUse = true;
+            this.pairs = pairs;
         }
 
         internal void Run(Action<Invitation> ready, Func<IPEndPoint, CancellationToken, Decision> authorize,
@@ -30,14 +32,14 @@ namespace ScreenShow
             var stop = cancellation.Token;
             try
             {
-                using (var certificate = Protocol.MakeCertificate())
+                using (var certificate = pairs == null ? Protocol.MakeCertificate() : pairs.OpenIdentity())
                 {
                     lock (gate)
                     {
                         stop.ThrowIfCancellationRequested();
                         listener.Start(4);
                     }
-                    var invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate);
+                    var invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null);
                     ready(invitation);
                     while (!stop.IsCancellationRequested)
                     {
@@ -58,33 +60,77 @@ namespace ScreenShow
                                 using (var writer = new BinaryWriter(stream))
                                 {
                                     bool mobile;
-                                    valid = Protocol.CheckHello(reader, invitation, out mobile);
+                                    var token = Protocol.ReadHello(reader, out mobile);
+                                    bool newPair = token != null && Protocol.Same(token, invitation.Token);
+                                    valid = newPair || (token != null && pairs != null && pairs.HasIncoming(token));
                                     if (!valid)
                                     {
                                         writer.Write((byte)Decision.InvalidCode);
                                         continue;
                                     }
                                     deadline.Change(Timeout.Infinite, Timeout.Infinite);
-                                    lock (gate) listener.Stop();
-                                    var decision = authorize((IPEndPoint)client.Client.RemoteEndPoint, stop);
-                                    stop.ThrowIfCancellationRequested();
-                                    writer.Write((byte)decision);
-                                    if (decision == Decision.View || decision == Decision.Control)
+                                    var endpoint = (IPEndPoint)client.Client.RemoteEndPoint;
+                                    client.ReceiveTimeout = 0;
+                                    using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(stop))
                                     {
-                                        started(decision);
-                                        StreamDesktop(client, reader, writer, decision == Decision.Control, mobile, stop);
+                                        Task<byte> first = Task.Run(() => reader.ReadByte());
+                                        first.ContinueWith(failure =>
+                                        {
+                                            if (failure.Exception != null)
+                                                try { waiting.Cancel(); } catch (ObjectDisposedException) { }
+                                        }, TaskContinuationOptions.ExecuteSynchronously);
+                                        Decision decision;
+                                        try
+                                        {
+                                            decision = authorize(endpoint, waiting.Token);
+                                            waiting.Token.ThrowIfCancellationRequested();
+                                        }
+                                        catch (OperationCanceledException)
+                                        {
+                                            stop.ThrowIfCancellationRequested();
+                                            decision = Decision.Denied;
+                                        }
+                                        if (!waiting.IsCancellationRequested)
+                                        {
+                                            bool approved = decision == Decision.View || decision == Decision.Control;
+                                            if (approved && !newPair && pairs != null && !pairs.HasIncoming(token))
+                                            {
+                                                approved = false;
+                                                decision = Decision.InvalidCode;
+                                            }
+                                            if (approved && newPair && pairs != null)
+                                            {
+                                                try { pairs.SaveIncoming(invitation, endpoint.Address, mobile); }
+                                                catch (IOException error)
+                                                {
+                                                    throw new InvalidOperationException("Не удалось сохранить привязку устройства.", error);
+                                                }
+                                                invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, true);
+                                            }
+                                            writer.Write((byte)decision);
+                                            if (approved)
+                                            {
+                                                started(decision);
+                                                StreamDesktop(client, reader, writer, first, decision == Decision.Control, mobile, stop);
+                                            }
+                                        }
+                                        client.Close();
                                     }
                                 }
                             }
                             catch (AuthenticationException) { if (valid) throw; }
-                            catch (IOException) { if (valid) throw; }
+                            catch (IOException) { if (valid && pairs == null && !stop.IsCancellationRequested) throw; }
                             catch (ObjectDisposedException) { if (valid) throw; }
                             finally
                             {
                                 lock (gate) peer = null;
                             }
                         }
-                        if (valid) return;
+                        if (valid)
+                        {
+                            if (pairs == null) return;
+                            if (!stop.IsCancellationRequested) ready(invitation);
+                        }
                     }
                 }
             }
@@ -95,18 +141,19 @@ namespace ScreenShow
         }
 
         private static void StreamDesktop(TcpClient client, BinaryReader reader, BinaryWriter writer,
-            bool control, bool mobile, CancellationToken stop)
+            Task<byte> first, bool control, bool mobile, CancellationToken stop)
         {
-            client.ReceiveTimeout = 0;
             Task input = Task.Run(delegate
             {
                 try
                 {
                     using (var desktop = new DesktopInput())
                     {
+                        byte? kind = first.GetAwaiter().GetResult();
                         while (!stop.IsCancellationRequested)
                         {
-                            var command = InputCommand.Read(reader);
+                            var command = InputCommand.Read(reader, kind);
+                            kind = null;
                             if (!control || (!mobile && command.Kind == InputKind.Text))
                                 throw new InvalidDataException("Команда недоступна в текущем сеансе.");
                             if (!stop.IsCancellationRequested) desktop.Apply(command);
@@ -181,7 +228,7 @@ namespace ScreenShow
                 {
                     Protocol.WriteHello(stream, invitation);
                     waiting();
-                    stream.ReadTimeout = Protocol.ApprovalTimeout + Protocol.NetworkTimeout;
+                    stream.ReadTimeout = Timeout.Infinite;
                     var decision = (Decision)reader.ReadByte();
                     if (decision == Decision.Denied) throw new InvalidOperationException("Владелец отклонил подключение.");
                     if (decision == Decision.Expired) throw new TimeoutException("Время подтверждения истекло.");

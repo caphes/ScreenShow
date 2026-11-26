@@ -18,7 +18,10 @@ public final class Interop implements RemoteSession.Listener {
 
     private Interop(String code, String scenario) {
         this.scenario = scenario;
-        remote = new RemoteSession(RemoteSession.Invitation.parse(code), this);
+        RemoteSession.Invitation invitation = RemoteSession.Invitation.parse(code);
+        if (invitation.canSave() != scenario.equals("text"))
+            throw new AssertionError("Unexpected invitation persistence for " + scenario);
+        remote = new RemoteSession(invitation, this);
     }
 
     public static void main(String[] arguments) throws Exception {

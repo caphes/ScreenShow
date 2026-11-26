@@ -96,9 +96,9 @@ namespace ScreenShow
             stream.Write(buffer, 0, buffer.Length);
         }
 
-        internal static InputCommand Read(BinaryReader reader)
+        internal static InputCommand Read(BinaryReader reader, byte? kind = null)
         {
-            return new InputCommand((InputKind)reader.ReadByte(), reader.ReadUInt16(), reader.ReadUInt16(),
+            return new InputCommand((InputKind)(kind ?? reader.ReadByte()), reader.ReadUInt16(), reader.ReadUInt16(),
                 reader.ReadInt32());
         }
     }

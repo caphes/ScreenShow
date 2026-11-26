@@ -8,7 +8,7 @@ if not exist "%SCREENSHOW_CSC%" (
     exit /b 1
 )
 if not exist bin mkdir bin
-"%SCREENSHOW_CSC%" /nologo /target:winexe /optimize+ /codepage:65001 /win32manifest:src\ScreenShow.manifest /out:bin\ScreenShow.exe /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll src\*.cs
+"%SCREENSHOW_CSC%" /nologo /target:winexe /optimize+ /codepage:65001 /win32manifest:src\ScreenShow.manifest /out:bin\ScreenShow.exe /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Security.dll src\*.cs
 if errorlevel 1 (
     popd
     exit /b 1

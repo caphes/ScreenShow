@@ -6,6 +6,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewConfiguration;
 
@@ -17,15 +18,25 @@ final class RemoteScreen extends View {
     private final int touchSlop;
     private final float wheelStep;
     private final Runnable hold = this::rightClick;
+    private final ScaleGestureDetector scale;
     private Bitmap frame;
-    private boolean controlling, pointing, dragging, consumed, scrolling;
-    private float startX, startY, previousY, remainingScroll;
+    private boolean controlling, pointing, dragging, consumed, scrolling, startInImage;
+    private float startX, startY, previousX, previousY, remainingScroll;
+    private float zoom = 1, panX, panY;
 
     RemoteScreen(Context context, RemoteSession session) {
         super(context);
         this.session = session;
         touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         wheelStep = 35 * getResources().getDisplayMetrics().density;
+        scale = new ScaleGestureDetector(context, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScale(ScaleGestureDetector detector) {
+                changeZoom(detector.getScaleFactor(), detector.getFocusX(), detector.getFocusY());
+                return true;
+            }
+        });
+        scale.setQuickScaleEnabled(false);
+        scale.setStylusScaleEnabled(false);
         labelPaint.setColor(MainActivity.MUTED);
         labelPaint.setTextAlign(Paint.Align.CENTER);
         labelPaint.setTextSize(15 * getResources().getDisplayMetrics().scaledDensity);
@@ -60,10 +71,39 @@ final class RemoteScreen extends View {
             return;
         }
         float scale = Math.min((float) getWidth() / frame.getWidth(), (float) getHeight() / frame.getHeight());
-        float width = frame.getWidth() * scale;
-        float height = frame.getHeight() * scale;
-        imageBounds.set((getWidth() - width) / 2, (getHeight() - height) / 2,
-            (getWidth() + width) / 2, (getHeight() + height) / 2);
+        float width = frame.getWidth() * scale * zoom;
+        float height = frame.getHeight() * scale * zoom;
+        float limitX = Math.max(0, (width - getWidth()) / 2);
+        float limitY = Math.max(0, (height - getHeight()) / 2);
+        panX = Math.max(-limitX, Math.min(limitX, panX));
+        panY = Math.max(-limitY, Math.min(limitY, panY));
+        imageBounds.set((getWidth() - width) / 2 + panX, (getHeight() - height) / 2 + panY,
+            (getWidth() + width) / 2 + panX, (getHeight() + height) / 2 + panY);
+    }
+
+    void resetZoom() {
+        zoom = 1;
+        panX = panY = 0;
+        updateImageBounds();
+        invalidate();
+    }
+
+    private void changeZoom(float factor, float x, float y) {
+        float next = Math.max(1, Math.min(5, zoom * factor));
+        if (next == zoom || imageBounds.isEmpty()) return;
+        float anchorX = (x - imageBounds.left) / imageBounds.width();
+        float anchorY = (y - imageBounds.top) / imageBounds.height();
+        zoom = next;
+        updateImageBounds();
+        pan(x - (imageBounds.left + imageBounds.width() * anchorX),
+            y - (imageBounds.top + imageBounds.height() * anchorY));
+    }
+
+    private void pan(float x, float y) {
+        panX += x;
+        panY += y;
+        updateImageBounds();
+        invalidate();
     }
 
     @Override protected void onDraw(Canvas canvas) {
@@ -76,39 +116,53 @@ final class RemoteScreen extends View {
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
-        if (!controlling || imageBounds.isEmpty()) return false;
+        if (imageBounds.isEmpty()) return false;
+        scale.onTouchEvent(event);
         float x = event.getX();
         float y = event.getY();
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                if (!imageBounds.contains(x, y)) return false;
                 pointing = true;
-                startX = x;
-                startY = y;
-                send(RemoteSession.MOVE, x, y, 0);
-                postDelayed(hold, ViewConfiguration.getLongPressTimeout());
+                startX = previousX = x;
+                startY = previousY = y;
+                startInImage = imageBounds.contains(x, y);
+                if (controlling && startInImage) {
+                    send(RemoteSession.MOVE, x, y, 0);
+                    postDelayed(hold, ViewConfiguration.getLongPressTimeout());
+                }
                 return true;
             case MotionEvent.ACTION_POINTER_DOWN:
                 if (!pointing) return false;
                 removeCallbacks(hold);
                 if (dragging) send(RemoteSession.BUTTON, x, y, 1);
                 dragging = false;
-                consumed = scrolling = true;
+                consumed = true;
+                if (event.getPointerCount() != 2) {
+                    scrolling = false;
+                    return true;
+                }
+                scrolling = true;
                 remainingScroll = 0;
+                previousX = (x + event.getX(1)) / 2;
                 previousY = (y + event.getY(1)) / 2;
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (!pointing) return false;
                 if (scrolling && event.getPointerCount() > 1) {
+                    float middleX = (x + event.getX(1)) / 2;
                     float middleY = (y + event.getY(1)) / 2;
-                    remainingScroll += middleY - previousY;
-                    previousY = middleY;
-                    int steps = Math.max(-10, Math.min(10, (int) (remainingScroll / wheelStep)));
-                    if (steps != 0) {
-                        send(RemoteSession.WHEEL, (x + event.getX(1)) / 2, middleY, steps * 120);
-                        remainingScroll -= steps * wheelStep;
+                    if (zoom > 1) {
+                        pan(middleX - previousX, middleY - previousY);
+                    } else if (controlling && !scale.isInProgress() && startInImage) {
+                        scroll(middleX, middleY);
                     }
-                } else if (!consumed) {
+                    previousX = middleX;
+                    previousY = middleY;
+                } else if (!consumed && !controlling && zoom > 1) {
+                    pan(x - previousX, y - previousY);
+                    previousX = x;
+                    previousY = y;
+                } else if (!consumed && controlling && startInImage) {
                     if (!dragging && Math.hypot(x - startX, y - startY) > touchSlop) {
                         removeCallbacks(hold);
                         send(RemoteSession.BUTTON, startX, startY, 257);
@@ -125,7 +179,7 @@ final class RemoteScreen extends View {
                 removeCallbacks(hold);
                 if (dragging) {
                     send(RemoteSession.BUTTON, x, y, 1);
-                } else if (!consumed) {
+                } else if (!consumed && controlling && startInImage) {
                     send(RemoteSession.BUTTON, x, y, 257);
                     send(RemoteSession.BUTTON, x, y, 1);
                     performClick();
@@ -150,6 +204,15 @@ final class RemoteScreen extends View {
         consumed = true;
         send(RemoteSession.BUTTON, startX, startY, 258);
         send(RemoteSession.BUTTON, startX, startY, 2);
+    }
+
+    private void scroll(float x, float y) {
+        remainingScroll += y - previousY;
+        int steps = Math.max(-10, Math.min(10, (int) (remainingScroll / wheelStep)));
+        if (steps != 0) {
+            send(RemoteSession.WHEEL, x, y, steps * 120);
+            remainingScroll -= steps * wheelStep;
+        }
     }
 
     private void send(int kind, float x, float y, int value) {
