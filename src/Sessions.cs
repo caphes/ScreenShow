@@ -17,6 +17,7 @@ namespace ScreenShow
         private readonly object gate = new object();
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private readonly PairStore pairs;
+        private readonly RelayAddress relay;
         private TcpClient peer;
 
         internal HostSession(IPAddress address, int port, PairStore pairs = null)
@@ -26,10 +27,17 @@ namespace ScreenShow
             this.pairs = pairs;
         }
 
+        internal HostSession(RelayAddress relay, PairStore pairs)
+        {
+            this.relay = relay;
+            this.pairs = pairs;
+        }
+
         internal void Run(Action<Invitation> ready, Func<IPEndPoint, CancellationToken, Decision> authorize,
             Action<Decision> started)
         {
             var stop = cancellation.Token;
+            byte[] relayKey = null;
             try
             {
                 using (var certificate = pairs == null ? Protocol.MakeCertificate() : pairs.OpenIdentity())
@@ -37,14 +45,18 @@ namespace ScreenShow
                     lock (gate)
                     {
                         stop.ThrowIfCancellationRequested();
-                        listener.Start(4);
+                        if (listener != null) listener.Start(4);
                     }
-                    var invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null, pairs != null);
-                    ready(invitation);
+                    if (relay != null) relayKey = pairs.GetRelayKey();
+                    var invitation = relay == null
+                        ? Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null, pairs != null)
+                        : Invitation.CreateRelay(relay, RelayTransport.Route(relayKey), certificate);
+                    if (relay == null) ready(invitation);
                     while (!stop.IsCancellationRequested)
                     {
                         bool valid = false;
-                        using (TcpClient client = listener.AcceptTcpClient())
+                        bool transportReady = relay == null;
+                        using (TcpClient client = relay == null ? listener.AcceptTcpClient() : new TcpClient())
                         {
                             lock (gate)
                             {
@@ -53,6 +65,13 @@ namespace ScreenShow
                             }
                             try
                             {
+                                if (relay != null)
+                                {
+                                    RelayTransport.Connect(client, relay, relayKey, true);
+                                    ready(invitation);
+                                    RelayTransport.WaitForViewer(client);
+                                    transportReady = true;
+                                }
                                 using (var deadline = new Timer(socket => ((TcpClient)socket).Close(),
                                     client, Protocol.NetworkTimeout + 2000, Timeout.Infinite))
                                 using (var stream = Protocol.OpenHost(client, certificate))
@@ -65,14 +84,15 @@ namespace ScreenShow
                                     bool newPair = token != null && privatePairToken == invitation.PrivatePairToken &&
                                         Protocol.Same(token, invitation.Token);
                                     var device = token != null && !newPair && pairs != null ? pairs.FindIncoming(token) : null;
-                                    valid = newPair || (device != null && device.Invitation.PrivatePairToken == privatePairToken);
+                                    valid = newPair || (device != null && device.Invitation.PrivatePairToken == privatePairToken &&
+                                        (device.Invitation.Relay == null) == (relay == null));
                                     if (!valid)
                                     {
                                         writer.Write((byte)Decision.InvalidCode);
                                         continue;
                                     }
                                     deadline.Change(Timeout.Infinite, Timeout.Infinite);
-                                    var endpoint = (IPEndPoint)client.Client.RemoteEndPoint;
+                                    var endpoint = relay == null ? (IPEndPoint)client.Client.RemoteEndPoint : null;
                                     client.ReceiveTimeout = 0;
                                     using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(stop))
                                     {
@@ -105,12 +125,12 @@ namespace ScreenShow
                                             if (approved && newPair && pairs != null)
                                             {
                                                 savedToken = Invitation.NewToken();
-                                                try { pairs.SaveIncoming(invitation.WithToken(savedToken), endpoint.Address, mobile, decision); }
+                                                try { pairs.SaveIncoming(invitation.WithToken(savedToken), endpoint == null ? null : endpoint.Address, mobile, decision); }
                                                 catch (IOException error)
                                                 {
                                                     throw new InvalidOperationException("Не удалось сохранить привязку устройства.", error);
                                                 }
-                                                invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, true, true);
+                                                invitation = invitation.WithToken(Invitation.NewToken());
                                             }
                                             if (approved && privatePairToken)
                                             {
@@ -131,8 +151,8 @@ namespace ScreenShow
                                 }
                             }
                             catch (AuthenticationException) { if (valid) throw; }
-                            catch (IOException) { if (valid && pairs == null && !stop.IsCancellationRequested) throw; }
-                            catch (ObjectDisposedException) { if (valid) throw; }
+                            catch (IOException) { if ((!transportReady || (valid && pairs == null)) && !stop.IsCancellationRequested) throw; }
+                            catch (ObjectDisposedException) { if (valid || !transportReady) throw; }
                             finally
                             {
                                 lock (gate) peer = null;
@@ -141,13 +161,14 @@ namespace ScreenShow
                         if (valid)
                         {
                             if (pairs == null) return;
-                            if (!stop.IsCancellationRequested) ready(invitation);
+                            if (relay == null && !stop.IsCancellationRequested) ready(invitation);
                         }
                     }
                 }
             }
             finally
             {
+                if (relayKey != null) Array.Clear(relayKey, 0, relayKey.Length);
                 Stop();
             }
         }
@@ -206,7 +227,7 @@ namespace ScreenShow
             lock (gate)
             {
                 cancellation.Cancel();
-                listener.Stop();
+                if (listener != null) listener.Stop();
                 if (peer != null) peer.Close();
             }
         }
@@ -229,11 +250,16 @@ namespace ScreenShow
         {
             try
             {
-                Task connection = client.ConnectAsync(invitation.Endpoint.Address, invitation.Endpoint.Port);
-                if (!connection.Wait(Protocol.NetworkTimeout))
+                if (invitation.Relay != null)
+                    RelayTransport.Connect(client, invitation.Relay, invitation.Route, false);
+                else
                 {
-                    connection.ContinueWith(task => { var exception = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
-                    throw new TimeoutException("Компьютер не отвечает. Проверьте сеть и адрес в приглашении.");
+                    Task connection = client.ConnectAsync(invitation.Endpoint.Address, invitation.Endpoint.Port);
+                    if (!connection.Wait(Protocol.NetworkTimeout))
+                    {
+                        connection.ContinueWith(task => { var exception = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+                        throw new TimeoutException("Компьютер не отвечает. Проверьте сеть и адрес в приглашении.");
+                    }
                 }
                 using (var stream = Protocol.OpenViewer(client, invitation))
                 using (var reader = new BinaryReader(stream))

@@ -38,17 +38,20 @@ final class RemoteSession {
         final InetSocketAddress address;
         final byte[] token;
         final byte[] fingerprint;
+        final byte[] route;
         final String code;
 
-        private Invitation(InetSocketAddress address, byte[] token, byte[] fingerprint, String code) {
+        private Invitation(InetSocketAddress address, byte[] token, byte[] fingerprint, byte[] route, String code) {
             this.address = address;
             this.token = token;
             this.fingerprint = fingerprint;
+            this.route = route;
             this.code = code;
         }
 
         static Invitation parse(String value) {
             String code = value.trim();
+            if (code.startsWith("SSR-")) return parseRelay(code);
             if ((!code.startsWith("SS1-") && !code.startsWith("SS2-") && !code.startsWith("SS3-")) || code.length() != 87)
                 throw new IllegalArgumentException("Вставьте приглашение ScreenShow.");
             byte[] data;
@@ -65,24 +68,43 @@ final class RemoteSession {
             try {
                 InetAddress ip = InetAddress.getByAddress(Arrays.copyOfRange(data, 0, 4));
                 return new Invitation(new InetSocketAddress(ip, port), Arrays.copyOfRange(data, 6, 30),
-                    Arrays.copyOfRange(data, 30, 62), code);
+                    Arrays.copyOfRange(data, 30, 62), null, code);
             } catch (IOException error) {
                 throw new IllegalArgumentException("В приглашении указан недопустимый адрес.", error);
             }
         }
 
+        private static Invitation parseRelay(String code) {
+            if (code.length() > 256) throw new IllegalArgumentException("Слишком длинный код приглашения.");
+            byte[] data = Base64.getUrlDecoder().decode(code.substring(4));
+            if (data.length < 91 || data.length > 186) throw new IllegalArgumentException("Неверный код подключения через интернет.");
+            int port = (data[0] & 255) * 256 + (data[1] & 255);
+            String host = new String(data, 90, data.length - 90, StandardCharsets.US_ASCII);
+            if (port == 0 || !host.matches("[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"))
+                throw new IllegalArgumentException("В приглашении указан недопустимый адрес сервера.");
+            return new Invitation(InetSocketAddress.createUnresolved(host, port), Arrays.copyOfRange(data, 34, 58),
+                Arrays.copyOfRange(data, 58, 90), Arrays.copyOfRange(data, 2, 34), code);
+        }
+
         boolean canSave() { return code.startsWith("SS2-") || privatePairToken(); }
 
-        boolean privatePairToken() { return code.startsWith("SS3-"); }
+        boolean privatePairToken() { return route != null || code.startsWith("SS3-"); }
 
         Invitation withToken(byte[] secret) {
             byte[] data = Base64.getUrlDecoder().decode(code.substring(4));
-            System.arraycopy(secret, 0, data, 6, token.length);
-            return new Invitation(address, secret, fingerprint,
-                "SS3-" + Base64.getUrlEncoder().withoutPadding().encodeToString(data));
+            System.arraycopy(secret, 0, data, route == null ? 6 : 34, token.length);
+            return new Invitation(address, secret, fingerprint, route,
+                code.substring(0, 4) + Base64.getUrlEncoder().withoutPadding().encodeToString(data));
         }
 
-        String deviceKey() { return Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint); }
+        String deviceKey() {
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint) + (route == null ? "" : "-relay");
+        }
+
+        String displayAddress() {
+            if (route == null) return address.getAddress().getHostAddress() + ":" + address.getPort();
+            return "Интернет · " + address.getHostString() + " · " + deviceKey().substring(0, 6);
+        }
     }
 
     static final class Command {
@@ -145,7 +167,7 @@ final class RemoteSession {
             message = "Не удалось проверить защищённое подключение. Запросите новое приглашение.";
             error = true;
         } catch (SocketTimeoutException failure) {
-            message = "Компьютер не отвечает. Проверьте Wi-Fi или VPN и создайте новое приглашение.";
+            message = "Соединение не отвечает. Проверьте сеть и открыт ли доступ на ПК.";
             error = true;
         } catch (GeneralSecurityException failure) {
             message = "Не удалось открыть защищённое подключение.";
@@ -170,16 +192,21 @@ final class RemoteSession {
                 socket = transport;
             }
             try {
-                transport.connect(invitation.address, TIMEOUT);
+                InetSocketAddress endpoint = invitation.route == null ? invitation.address :
+                    new InetSocketAddress(invitation.address.getHostString(), invitation.address.getPort());
+                transport.connect(endpoint, TIMEOUT);
             } catch (SocketTimeoutException failure) {
                 throw failure;
             } catch (IOException failure) {
-                throw new IOException("Не удалось связаться с ПК. Проверьте сеть и брандмауэр Windows.", failure);
+                throw new IOException(invitation.route == null ?
+                    "Не удалось связаться с ПК. Проверьте сеть и брандмауэр Windows." :
+                    "Сервер-посредник недоступен. Проверьте сеть и адрес в приглашении.", failure);
             }
             transport.setTcpNoDelay(true);
             transport.setSoTimeout(TIMEOUT);
+            if (invitation.route != null) joinRelay(transport);
             try (SSLSocket tls = (SSLSocket) context.getSocketFactory().createSocket(
-                    transport, invitation.address.getAddress().getHostAddress(), invitation.address.getPort(), true)) {
+                    transport, invitation.address.getHostString(), invitation.address.getPort(), true)) {
                 tls.setEnabledProtocols(new String[] { "TLSv1.2" });
                 tls.startHandshake();
                 OutputStream output = tls.getOutputStream();
@@ -214,6 +241,16 @@ final class RemoteSession {
                 while (true) listener.frame(readFrame(input));
             }
         }
+    }
+
+    private void joinRelay(Socket transport) throws IOException {
+        byte[] packet = new byte[37];
+        System.arraycopy("SSR1V".getBytes(StandardCharsets.US_ASCII), 0, packet, 0, 5);
+        System.arraycopy(invitation.route, 0, packet, 5, invitation.route.length);
+        transport.getOutputStream().write(packet);
+        int response = transport.getInputStream().read();
+        if (response == 2) throw new IOException("Компьютер не в сети или занят. Откройте доступ на ПК.");
+        if (response != 1) throw new IOException("Сервер-посредник отклонил подключение.");
     }
 
     static byte[] readFrame(DataInputStream input) throws IOException {

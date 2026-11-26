@@ -16,14 +16,27 @@ namespace ScreenShow
         private const string Prefix = "SS1-";
         private const string PairPrefix = "SS2-";
         private const string PrivatePairPrefix = "SS3-";
+        private const string RelayPrefix = "SSR-";
         internal const int TokenSize = 24;
         internal const int FingerprintSize = 32;
         private const int Size = 4 + 2 + TokenSize + FingerprintSize;
+        private const int RelayHeader = 2 + RelayTransport.KeySize + TokenSize + FingerprintSize;
         internal readonly IPEndPoint Endpoint;
         internal readonly byte[] Token;
         internal readonly byte[] Fingerprint;
         internal readonly bool Paired;
         internal readonly bool PrivatePairToken;
+        internal readonly RelayAddress Relay;
+        internal readonly byte[] Route;
+
+        internal string DisplayAddress
+        {
+            get
+            {
+                return Relay == null ? Endpoint.ToString() : "Интернет · " + Relay.Host + " · " +
+                    BitConverter.ToString(Fingerprint, 0, 3).Replace("-", "");
+            }
+        }
 
         internal Invitation(IPEndPoint endpoint, byte[] token, byte[] fingerprint, bool paired = false,
             bool privatePairToken = false)
@@ -33,6 +46,20 @@ namespace ScreenShow
             Fingerprint = fingerprint;
             Paired = paired;
             PrivatePairToken = privatePairToken;
+        }
+
+        private Invitation(RelayAddress relay, byte[] route, byte[] token, byte[] fingerprint)
+        {
+            Relay = relay;
+            Route = route;
+            Token = token;
+            Fingerprint = fingerprint;
+            Paired = PrivatePairToken = true;
+        }
+
+        internal static Invitation CreateRelay(RelayAddress relay, byte[] route, X509Certificate2 certificate)
+        {
+            return new Invitation(relay, route, NewToken(), Protocol.Fingerprint(certificate));
         }
 
         internal static Invitation Create(IPEndPoint endpoint, X509Certificate2 certificate, bool paired = false,
@@ -51,11 +78,24 @@ namespace ScreenShow
 
         internal Invitation WithToken(byte[] token)
         {
-            return new Invitation(Endpoint, token, Fingerprint, Paired, PrivatePairToken);
+            return Relay == null ? new Invitation(Endpoint, token, Fingerprint, Paired, PrivatePairToken) :
+                new Invitation(Relay, Route, token, Fingerprint);
         }
 
         public override string ToString()
         {
+            if (Relay != null)
+            {
+                byte[] host = Encoding.ASCII.GetBytes(Relay.Host);
+                var relayed = new byte[RelayHeader + host.Length];
+                relayed[0] = (byte)(Relay.Port >> 8);
+                relayed[1] = (byte)Relay.Port;
+                Route.CopyTo(relayed, 2);
+                Token.CopyTo(relayed, 2 + RelayTransport.KeySize);
+                Fingerprint.CopyTo(relayed, 2 + RelayTransport.KeySize + TokenSize);
+                host.CopyTo(relayed, RelayHeader);
+                return RelayPrefix + Encode(relayed);
+            }
             var data = new byte[Size];
             Endpoint.Address.GetAddressBytes().CopyTo(data, 0);
             data[4] = (byte)(Endpoint.Port >> 8);
@@ -63,12 +103,24 @@ namespace ScreenShow
             Token.CopyTo(data, 6);
             Fingerprint.CopyTo(data, 6 + TokenSize);
             string prefix = PrivatePairToken ? PrivatePairPrefix : Paired ? PairPrefix : Prefix;
-            return prefix + Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            return prefix + Encode(data);
+        }
+
+        private static string Encode(byte[] data)
+        {
+            return Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        }
+
+        private static byte[] Decode(string text)
+        {
+            string data = text.Substring(Prefix.Length).Replace('-', '+').Replace('_', '/');
+            return Convert.FromBase64String(data.PadRight((data.Length + 3) / 4 * 4, '='));
         }
 
         internal static Invitation Parse(string text)
         {
             text = text.Trim();
+            if (text.StartsWith(RelayPrefix, StringComparison.Ordinal)) return ParseRelay(text);
             int encodedLength = (Size * 8 + 5) / 6;
             bool privatePairToken = text.StartsWith(PrivatePairPrefix, StringComparison.Ordinal);
             bool paired = privatePairToken || text.StartsWith(PairPrefix, StringComparison.Ordinal);
@@ -78,7 +130,7 @@ namespace ScreenShow
             byte[] data;
             try
             {
-                data = Convert.FromBase64String(text.Substring(Prefix.Length).Replace('-', '+').Replace('_', '/') + "=");
+                data = Decode(text);
                 if (data.Length != Size) throw new FormatException();
             }
             catch (FormatException)
@@ -96,6 +148,23 @@ namespace ScreenShow
             Array.Copy(data, 6, token, 0, token.Length);
             Array.Copy(data, 6 + token.Length, fingerprint, 0, fingerprint.Length);
             return new Invitation(new IPEndPoint(ip, port), token, fingerprint, paired, privatePairToken);
+        }
+
+        private static Invitation ParseRelay(string text)
+        {
+            if (text.Length > 256) throw new FormatException("Слишком длинный код приглашения.");
+            byte[] data = Decode(text);
+            if (data.Length <= RelayHeader || data.Length > RelayHeader + 96)
+                throw new FormatException("Неверный код подключения через интернет.");
+            int port = (data[0] << 8) | data[1];
+            var address = RelayAddress.Parse(Encoding.ASCII.GetString(data, RelayHeader, data.Length - RelayHeader) + ":" + port);
+            var route = new byte[RelayTransport.KeySize];
+            var token = new byte[TokenSize];
+            var fingerprint = new byte[FingerprintSize];
+            Array.Copy(data, 2, route, 0, route.Length);
+            Array.Copy(data, 2 + route.Length, token, 0, token.Length);
+            Array.Copy(data, 2 + route.Length + token.Length, fingerprint, 0, fingerprint.Length);
+            return new Invitation(address, route, token, fingerprint);
         }
     }
 

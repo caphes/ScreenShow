@@ -52,12 +52,13 @@ namespace ScreenShow
 
         internal void SaveIncoming(Invitation invite, IPAddress address, bool mobile, Decision access)
         {
-            SaveDevice(new PairedDevice(invite, (mobile ? "Android · " : "Windows · ") + address, true, access));
+            SaveDevice(new PairedDevice(invite, (mobile ? "Android · " : "Windows · ") +
+                (address == null ? "Интернет" : address.ToString()), true, access));
         }
 
         internal void SaveOutgoing(Invitation invite)
         {
-            SaveDevice(new PairedDevice(invite, invite.Endpoint.ToString(), false));
+            SaveDevice(new PairedDevice(invite, invite.DisplayAddress, false));
         }
 
         internal PairedDevice FindIncoming(byte[] token)
@@ -83,7 +84,7 @@ namespace ScreenShow
         internal void Remove(PairedDevice device)
         {
             File.Delete(DevicePath(device.Incoming ? device.Invitation.Token : device.Invitation.Fingerprint,
-                device.Incoming));
+                device.Incoming, device.Invitation.Relay != null));
         }
 
         internal string HostAddress
@@ -96,10 +97,25 @@ namespace ScreenShow
             set { Save(Path.Combine(folder, "endpoint.dat"), Encoding.UTF8.GetBytes(value), true); }
         }
 
+        internal byte[] GetRelayKey()
+        {
+            string path = Path.Combine(folder, "relay-key.dat");
+            if (!File.Exists(path))
+            {
+                var generated = new byte[RelayTransport.KeySize];
+                using (var random = RandomNumberGenerator.Create()) random.GetBytes(generated);
+                try { Save(path, generated, false); }
+                finally { Array.Clear(generated, 0, generated.Length); }
+            }
+            byte[] key = Load(path);
+            if (key.Length != RelayTransport.KeySize) throw new IOException("Повреждён ключ подключения к серверу.");
+            return key;
+        }
+
         private void SaveDevice(PairedDevice device, bool replaceOnly = false)
         {
             string path = DevicePath(device.Incoming ? device.Invitation.Token : device.Invitation.Fingerprint,
-                device.Incoming);
+                device.Incoming, device.Invitation.Relay != null);
             string record = device.Invitation + "\n" + device.Label + "\n" +
                 (device.Access == Decision.Control ? "control" : "view");
             Save(path, Encoding.UTF8.GetBytes(record), true, replaceOnly);
@@ -122,10 +138,10 @@ namespace ScreenShow
             catch (FormatException) { return null; }
         }
 
-        private string DevicePath(byte[] key, bool incoming)
+        private string DevicePath(byte[] key, bool incoming, bool relay = false)
         {
             using (var hash = SHA256.Create())
-                return Path.Combine(folder, (incoming ? "in-" : "out-") +
+                return Path.Combine(folder, (incoming ? "in-" : relay ? "out-relay-" : "out-") +
                     BitConverter.ToString(hash.ComputeHash(key)).Replace("-", "") + ".dat");
         }
 

@@ -9,6 +9,7 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewConfiguration;
+import java.util.function.IntConsumer;
 
 final class RemoteScreen extends View {
     private final Paint imagePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
@@ -23,6 +24,7 @@ final class RemoteScreen extends View {
     private boolean controlling, pointing, dragging, consumed, scrolling, startInImage;
     private float startX, startY, previousX, previousY, remainingScroll;
     private float zoom = 1, panX, panY;
+    private IntConsumer zoomListener;
 
     RemoteScreen(Context context, RemoteSession session) {
         super(context);
@@ -86,6 +88,16 @@ final class RemoteScreen extends View {
         panX = panY = 0;
         updateImageBounds();
         invalidate();
+        reportZoom();
+    }
+
+    void onZoom(IntConsumer listener) {
+        zoomListener = listener;
+        reportZoom();
+    }
+
+    private void reportZoom() {
+        if (zoomListener != null) zoomListener.accept(Math.round(zoom * 100));
     }
 
     private void changeZoom(float factor, float x, float y) {
@@ -97,6 +109,7 @@ final class RemoteScreen extends View {
         updateImageBounds();
         pan(x - (imageBounds.left + imageBounds.width() * anchorX),
             y - (imageBounds.top + imageBounds.height() * anchorY));
+        reportZoom();
     }
 
     private void pan(float x, float y) {

@@ -21,7 +21,7 @@ public final class Interop implements RemoteSession.Listener {
         this.scenario = scenario;
         enteredCode = code;
         RemoteSession.Invitation invitation = RemoteSession.Invitation.parse(code);
-        if (invitation.canSave() != scenario.equals("text"))
+        if (invitation.canSave() != (scenario.equals("text") || scenario.equals("relay")))
             throw new AssertionError("Unexpected invitation persistence for " + scenario);
         remote = new RemoteSession(invitation, this);
     }
@@ -44,10 +44,11 @@ public final class Interop implements RemoteSession.Listener {
     @Override public void waiting() { }
 
     @Override public void connected(boolean control, boolean text, RemoteSession.Invitation linked) {
-        boolean expectedControl = !scenario.equals("view");
+        boolean expectedControl = !scenario.equals("view") && !scenario.equals("relay");
         boolean expectedText = scenario.equals("text");
+        boolean newCredential = expectedText || scenario.equals("relay");
         authorized = control == expectedControl && text == expectedText &&
-            (expectedText ? linked.privatePairToken() && !linked.code.equals(enteredCode) : linked.code.equals(enteredCode));
+            (newCredential ? linked.privatePairToken() && !linked.code.equals(enteredCode) : linked.code.equals(enteredCode));
         if (expectedText) remote.queue(new RemoteSession.Command(RemoteSession.TEXT, 0, 0, 0x416));
     }
 

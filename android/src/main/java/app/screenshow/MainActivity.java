@@ -17,8 +17,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
@@ -37,16 +39,16 @@ import java.util.ArrayList;
 import java.util.Comparator;
 
 public final class MainActivity extends Activity {
-    private static final int BACKGROUND = Color.rgb(239, 246, 241);
+    private static final int BACKGROUND = Color.rgb(242, 248, 244);
     private static final int PANEL = Color.WHITE;
-    private static final int FIELD = Color.rgb(230, 241, 234);
-    private static final int BORDER = Color.rgb(218, 232, 222);
+    private static final int FIELD = Color.rgb(232, 242, 236);
+    private static final int BORDER = Color.rgb(211, 229, 219);
     private static final int INK = Color.rgb(20, 44, 34);
     private static final int MUTED = Color.rgb(73, 99, 86);
     private static final int ACCENT = Color.rgb(23, 104, 72);
     private static final int DANGER = Color.rgb(159, 42, 57);
     private static final int DANGER_FILL = Color.rgb(252, 234, 236);
-    static final int VIEW_BACKGROUND = Color.rgb(12, 26, 20);
+    static final int VIEW_BACKGROUND = Color.rgb(11, 23, 18);
     static final int VIEW_HINT = Color.rgb(174, 202, 187);
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -99,35 +101,44 @@ public final class MainActivity extends Activity {
                 content.setLayoutParams(contentLayout);
             }
         });
-        content.setPadding(dp(20), dp(30), dp(20), dp(26));
+        content.setPadding(dp(18), dp(18), dp(18), dp(26));
         content.setFocusableInTouchMode(true);
         content.requestFocus();
 
         LinearLayout brand = new LinearLayout(this);
         brand.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(R.drawable.ic_screenshow);
-        brand.addView(icon, new LinearLayout.LayoutParams(dp(56), dp(56)));
-        TextView title = label("ScreenShow", 34, INK, true);
-        title.setLetterSpacing(-0.03f);
-        LinearLayout.LayoutParams titleLayout = new LinearLayout.LayoutParams(-2, -2);
-        titleLayout.leftMargin = dp(12);
-        brand.addView(title, titleLayout);
+        brand.setPadding(dp(18), dp(11), dp(8), dp(11));
+        GradientDrawable hero = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+            new int[] { Color.rgb(233, 246, 238), Color.rgb(204, 232, 215) });
+        hero.setCornerRadius(dp(26));
+        hero.setStroke(dp(1), BORDER);
+        brand.setBackground(hero);
+        LinearLayout heading = column();
+        TextView title = label("ScreenShow", 29, INK, true);
+        title.setLetterSpacing(-0.035f);
+        add(heading, title, 0);
+        add(heading, label("Удалённый экран", 14, MUTED, false), 2);
+        brand.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView art = new ImageView(this);
+        art.setImageResource(R.drawable.connection_art);
+        art.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        brand.addView(art, new LinearLayout.LayoutParams(dp(94), dp(80)));
         add(content, brand, 0);
+        addDevices(content);
 
         LinearLayout card = column();
         card.setBackground(cardBackground());
         card.setElevation(dp(2));
         card.setPadding(dp(21), dp(22), dp(21), dp(21));
-        add(content, card, 26);
-        add(card, label("Подключиться к ПК", 23, INK, true), 0);
-        add(card, label("Вставьте код из ScreenShow на ПК, чтобы связать устройства.", 15, MUTED, false), 8);
+        add(content, card, 17);
+        add(card, label("Подключиться к ПК", 24, INK, true), 0);
+        add(card, label("Введите приглашение из ScreenShow на компьютере.", 15, MUTED, false), 6);
 
         add(card, label("Код приглашения", 14, MUTED, true), 20);
         code = new EditText(this);
         code.setTextColor(INK);
         code.setHintTextColor(MUTED);
-        code.setHint("SS3-…");
+        code.setHint("Вставьте код");
         code.setTextSize(16);
         code.setSingleLine(true);
         code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -137,23 +148,36 @@ public final class MainActivity extends Activity {
         code.setSaveEnabled(false);
         code.setContentDescription("Код приглашения");
         code.setPadding(dp(12), dp(9), dp(12), dp(9));
-        code.setMinHeight(dp(48));
-        code.setBackground(shape(FIELD, 13));
-        add(card, code, 7);
+        code.setMinHeight(dp(50));
+        code.setBackground(fieldBackground(false));
+        code.setOnFocusChangeListener((view, focused) -> view.setBackground(fieldBackground(focused)));
         code.setOnEditorActionListener((view, action, event) -> {
             if (action != EditorInfo.IME_ACTION_GO) return false;
             connect();
             return true;
         });
 
-        LinearLayout buttons = new LinearLayout(this);
+        LinearLayout codeRow = new LinearLayout(this);
+        codeRow.setGravity(Gravity.CENTER_VERTICAL);
+        codeRow.addView(code, new LinearLayout.LayoutParams(0, -2, 1));
         paste = button("Вставить", false, INK);
         paste.setOnClickListener(view -> paste());
+        LinearLayout.LayoutParams pastePosition = new LinearLayout.LayoutParams(-2, -2);
+        pastePosition.leftMargin = dp(8);
+        paste.setPadding(dp(12), dp(8), dp(12), dp(8));
+        codeRow.addView(paste, pastePosition);
+        add(card, codeRow, 7);
         join = button("Подключиться", true, INK);
         join.setOnClickListener(view -> connect());
-        rowButton(buttons, paste, 0, 1f);
-        rowButton(buttons, join, 8, 1.55f);
-        add(card, buttons, 12);
+        join.setEnabled(false);
+        code.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
+                join.setEnabled(active == null && value.toString().trim().length() != 0);
+            }
+            @Override public void afterTextChanged(Editable value) { }
+        });
+        add(card, join, 14);
         cancel = button("Отменить подключение", false, DANGER);
         cancel.setOnClickListener(view -> disconnect("Подключение отменено."));
         cancel.setVisibility(View.GONE);
@@ -165,7 +189,6 @@ public final class MainActivity extends Activity {
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(content, status, 14);
         setStatus(message, error);
-        addDevices(content);
     }
 
     private SharedPreferences pairing() {
@@ -181,14 +204,15 @@ public final class MainActivity extends Activity {
             }
         }
         if (saved.isEmpty()) return;
-        saved.sort(Comparator.comparing(invite -> invite.address.toString()));
-        add(content, label("Связанные компьютеры", 18, INK, true), 17);
+        saved.sort(Comparator.comparing(RemoteSession.Invitation::displayAddress));
+        add(content, label("Связанные компьютеры", 20, INK, true), 17);
         for (RemoteSession.Invitation invitation : saved) {
             LinearLayout row = new LinearLayout(this);
             row.setBackground(cardBackground());
             row.setPadding(dp(8), dp(8), dp(8), dp(8));
-            Button open = button(invitation.address.getAddress().getHostAddress() + ":" + invitation.address.getPort(),
-                false, INK);
+            Button open = button(invitation.displayAddress(), false, INK);
+            open.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            open.setPadding(dp(12), dp(8), dp(8), dp(8));
             open.setContentDescription("Подключиться к " + open.getText());
             open.setOnClickListener(view -> connect(invitation));
             Button remove = button("Забыть", false, DANGER);
@@ -245,20 +269,31 @@ public final class MainActivity extends Activity {
         LinearLayout layout = column();
         root.addView(layout, new FrameLayout.LayoutParams(-1, -1));
         screen = new RemoteScreen(this, connection.remote);
-        layout.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1));
+        screen.setBackground(shape(VIEW_BACKGROUND, 15));
+        screen.setClipToOutline(true);
+        LinearLayout.LayoutParams stage = new LinearLayout.LayoutParams(-1, 0, 1);
+        stage.setMargins(dp(8), dp(6), dp(8), 0);
+        layout.addView(screen, stage);
 
         LinearLayout toolbar = column();
-        toolbar.setBackgroundColor(PANEL);
-        toolbar.setPadding(dp(10), dp(6), dp(10), dp(8));
-        TextView mode = label(canControl ? "Просмотр · ввод выключен" : "Только просмотр", 13, ACCENT, true);
-        mode.setPadding(dp(5), 0, dp(5), 0);
+        toolbar.setBackground(cardBackground());
+        toolbar.setPadding(dp(8), dp(6), dp(8), dp(6));
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        TextView mode = label(canControl ? "Ввод выключен" : "Только просмотр", 13, ACCENT, true);
+        mode.setPadding(dp(8), dp(4), dp(4), dp(4));
         LinearLayout viewOptions = new LinearLayout(this);
         viewOptions.setGravity(Gravity.CENTER_VERTICAL);
         viewOptions.addView(mode, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView zoomAmount = label("100%", 13, MUTED, true);
+        zoomAmount.setGravity(Gravity.CENTER);
+        zoomAmount.setPadding(dp(6), 0, dp(6), 0);
+        viewOptions.addView(zoomAmount, new LinearLayout.LayoutParams(-2, -2));
+        screen.onZoom(percent -> zoomAmount.setText(percent + "%"));
         Button reset = button("По размеру", false, INK);
         reset.setContentDescription("Уместить экран целиком");
         reset.setOnClickListener(view -> screen.resetZoom());
-        viewOptions.addView(reset, new LinearLayout.LayoutParams(dp(110), -2));
+        reset.setPadding(dp(10), dp(8), dp(10), dp(8));
+        viewOptions.addView(reset, new LinearLayout.LayoutParams(-2, -2));
         toolbar.addView(viewOptions);
         LinearLayout actions = new LinearLayout(this);
         Button close = button("Отключиться", false, DANGER);
@@ -274,7 +309,7 @@ public final class MainActivity extends Activity {
                     controlling = !controlling;
                     screen.setControlling(controlling);
                     input.setText(controlling ? "Выключить ввод" : "Включить ввод");
-                    mode.setText(controlling ? "Управление активно" : "Просмотр · ввод выключен");
+                    mode.setText(controlling ? "Управление активно" : "Ввод выключен");
                     keys.setEnabled(controlling);
                 }
             });
@@ -284,7 +319,21 @@ public final class MainActivity extends Activity {
         }
         rowButton(actions, close, canControl ? 6 : 0, 1f);
         add(toolbar, actions, 4);
-        layout.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
+        toolbar.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            boolean wide = right - left >= dp(620);
+            if (wide == (toolbar.getOrientation() == LinearLayout.HORIZONTAL)) return;
+            toolbar.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+            viewOptions.setLayoutParams(wide ? new LinearLayout.LayoutParams(0, -2, 1) :
+                new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout.LayoutParams controls = wide ? new LinearLayout.LayoutParams(0, -2, 1.2f) :
+                new LinearLayout.LayoutParams(-1, -2);
+            controls.leftMargin = wide ? dp(8) : 0;
+            controls.topMargin = wide ? 0 : dp(4);
+            actions.setLayoutParams(controls);
+        });
+        LinearLayout.LayoutParams dock = new LinearLayout.LayoutParams(-1, -2);
+        dock.setMargins(dp(8), dp(7), dp(8), dp(7));
+        layout.addView(toolbar, dock);
     }
 
     private void showKeys(ViewConnection connection, boolean canType) {
@@ -347,7 +396,7 @@ public final class MainActivity extends Activity {
     private void setPending(boolean pending) {
         code.setEnabled(!pending);
         paste.setEnabled(!pending);
-        join.setEnabled(!pending);
+        join.setEnabled(!pending && !code.getText().toString().trim().isEmpty());
         for (Button device : devices) device.setEnabled(!pending);
         cancel.setVisibility(pending ? View.VISIBLE : View.GONE);
     }
@@ -433,7 +482,7 @@ public final class MainActivity extends Activity {
         int[][] states = { new int[] { -android.R.attr.state_enabled }, new int[0] };
         button.setTextColor(new ColorStateList(states, new int[] { MUTED, primary ? Color.WHITE : color }));
         int resting = primary ? ACCENT : color == DANGER ? DANGER_FILL : FIELD;
-        GradientDrawable fill = shape(resting, 13);
+        GradientDrawable fill = shape(resting, 17);
         fill.setColor(new ColorStateList(states, new int[] { FIELD, resting }));
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22509A71), fill, null));
         button.setMinWidth(0);
@@ -451,8 +500,14 @@ public final class MainActivity extends Activity {
     }
 
     private GradientDrawable cardBackground() {
-        GradientDrawable result = shape(PANEL, 23);
+        GradientDrawable result = shape(PANEL, 24);
         result.setStroke(dp(1), BORDER);
+        return result;
+    }
+
+    private GradientDrawable fieldBackground(boolean focused) {
+        GradientDrawable result = shape(FIELD, 15);
+        result.setStroke(dp(focused ? 2 : 1), focused ? ACCENT : BORDER);
         return result;
     }
 

@@ -19,7 +19,7 @@ namespace ScreenShow
             internal string Name;
             internal IPAddress Address;
             internal int Priority;
-            public override string ToString() { return Address + "   ·   " + Name; }
+            public override string ToString() { return Address == null ? Name : Address + "   ·   " + Name; }
         }
 
         private const int StopHotkey = 81;
@@ -35,6 +35,7 @@ namespace ScreenShow
         private readonly Button devices;
         private readonly PairStore pairs = new PairStore();
         private readonly Label status;
+        private readonly Theme.StatusDot statusDot;
         private readonly Panel approval;
         private readonly Label prompt;
         private HostSession host;
@@ -45,6 +46,7 @@ namespace ScreenShow
         private bool hotkey;
         private bool cancelled;
         private bool exitAfterSession;
+        private string relayServer = "";
 
         internal MainForm()
         {
@@ -54,64 +56,64 @@ namespace ScreenShow
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
-            ClientSize = new Size(836, 543);
+            ClientSize = new Size(836, 546);
             AutoScaleDimensions = new SizeF(96, 96);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Background;
             ForeColor = Theme.Ink;
             Font = new Font("Segoe UI", 10);
 
-            Theme.Put(this, new Theme.Mark(), 28, 32, 62, 62);
-            Theme.Put(this, Theme.Label("ScreenShow", 28, bold: true), 104, 27, 400, 48);
-            Theme.Put(this, Theme.Label("Демонстрация экрана и удалённое управление", 11, Theme.Muted),
-                106, 79, 500, 25);
-            var networkPill = Theme.Put(this, Theme.Card(17, true), 628, 44, 180, 34);
-            var network = Theme.Put(networkPill, Theme.Label("Локальная сеть / VPN", 9.5f, Theme.Accent, true), 4, 1, 172, 32);
-            network.TextAlign = ContentAlignment.MiddleCenter;
+            var hero = Theme.Put(this, Theme.Hero(), 26, 22, 784, 126);
+            Theme.Put(hero, new Theme.ConnectionArt(), 506, 1, 254, 124);
+            Theme.Put(hero, Theme.Label("ScreenShow", 35, bold: true), 21, 10, 465, 63);
+            Theme.Put(hero, Theme.Label("Демонстрация экрана и удалённое управление", 11, Theme.Muted),
+                26, 75, 447, 22);
+            var network = Theme.Put(hero, Theme.Label("Локальная сеть / VPN", 9, Theme.Accent, true), 26, 101, 440, 18);
 
-            var share = Theme.Put(this, Theme.Card(), 28, 127, 380, 296);
-            Theme.Put(share, Theme.Label("Показать мой экран", 17, bold: true), 20, 16, 338, 34);
-            Theme.Put(share, Theme.Label("Откройте доступ для своих устройств.", 10, Theme.Muted), 20, 53, 340, 27);
-            Theme.Put(share, Theme.Label("Сетевой адрес", 9.5f, Theme.Muted, true), 21, 91, 234, 21);
-            Theme.Put(share, Theme.Label("Порт", 9.5f, Theme.Muted, true), 279, 91, 78, 21);
+            var share = Theme.Put(this, Theme.Card(), 26, 163, 382, 264);
+            Theme.Put(share, Theme.Label("Показать мой экран", 17, bold: true), 20, 14, 338, 34);
+            Theme.Put(share, Theme.Label("Откройте доступ для своих устройств.", 10, Theme.Muted), 20, 51, 340, 24);
+            Theme.Put(share, Theme.Label("Способ подключения", 9.5f, Theme.Muted, true), 21, 82, 234, 21);
+            Theme.Put(share, Theme.Label("Порт", 9.5f, Theme.Muted, true), 279, 82, 78, 21);
             adapter = Theme.Put(share, new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Theme.Field, ForeColor = Theme.Ink,
                 FlatStyle = FlatStyle.Flat, DropDownWidth = 300, AccessibleName = "Сетевой адрес"
-            }, 21, 116, 246, 27);
+            }, 21, 107, 246, 27);
             Theme.StyleDropDown(adapter);
-            var portField = Theme.Put(share, Theme.Card(8, true), 279, 113, 80, 30);
+            var portField = Theme.Put(share, Theme.Card(8, true), 279, 104, 80, 30);
             port = Theme.Put(portField, new NumericUpDown
             {
                 Minimum = 1024, Maximum = 65535, Value = 47210,
                 BackColor = Theme.Field, ForeColor = Theme.Ink, BorderStyle = BorderStyle.None, AccessibleName = "Порт"
             }, 7, 5, 68, 23);
-            Theme.Put(share, Theme.Label("Ваше приглашение", 9.5f, Theme.Muted, true), 21, 155, 300, 20);
-            ownCode = Theme.CodeField(share, 21, 180, 224, 36);
+            Theme.Put(share, Theme.Label("Ваше приглашение", 9.5f, Theme.Muted, true), 21, 139, 300, 20);
+            ownCode = Theme.CodeField(share, 21, 163, 224, 36);
             ownCode.ReadOnly = true;
             ownCode.AccessibleName = "Ваше приглашение";
-            copy = Theme.Put(share, Theme.Button("Копировать"), 253, 180, 106, 36);
-            create = Theme.Put(share, Theme.Button("Открыть доступ", true), 21, 235, 218, 40);
-            stop = Theme.Put(share, Theme.Button("Остановить", danger: true), 247, 235, 112, 40);
+            copy = Theme.Put(share, Theme.Button("Копировать"), 253, 163, 106, 36);
+            create = Theme.Put(share, Theme.Button("Открыть доступ", true), 21, 211, 218, 39);
+            stop = Theme.Put(share, Theme.Button("Остановить", danger: true), 247, 211, 112, 39);
 
-            var join = Theme.Put(this, Theme.Card(), 428, 127, 380, 296);
-            Theme.Put(join, Theme.Label("Подключиться", 17, bold: true), 20, 16, 338, 34);
+            var join = Theme.Put(this, Theme.Card(), 428, 163, 382, 264);
+            Theme.Put(join, Theme.Label("Подключиться", 17, bold: true), 20, 14, 338, 34);
             Theme.Put(join, Theme.Label("Вставьте приглашение, полученное от владельца.", 10, Theme.Muted),
-                20, 53, 340, 29);
-            Theme.Put(join, Theme.Label("Код приглашения", 9.5f, Theme.Muted, true), 21, 91, 300, 21);
-            otherCode = Theme.CodeField(join, 21, 116, 233, 36);
+                20, 51, 340, 24);
+            Theme.Put(join, Theme.Label("Код приглашения", 9.5f, Theme.Muted, true), 21, 82, 300, 21);
+            otherCode = Theme.CodeField(join, 21, 105, 233, 36);
             otherCode.MaxLength = 256;
             otherCode.AccessibleName = "Код приглашения";
-            paste = Theme.Put(join, Theme.Button("Вставить"), 262, 116, 97, 36);
+            paste = Theme.Put(join, Theme.Button("Вставить"), 262, 105, 97, 36);
             Theme.Put(join, Theme.Label("Код и подтверждение нужны при первой привязке.",
-                10, Theme.Muted), 21, 170, 338, 43);
-            connect = Theme.Put(join, Theme.Button("Подключиться", true), 21, 235, 173, 40);
-            devices = Theme.Put(join, Theme.Button("Устройства…"), 202, 235, 157, 40);
+                10, Theme.Muted), 21, 155, 338, 42);
+            connect = Theme.Put(join, Theme.Button("Подключиться", true), 21, 211, 173, 39);
+            devices = Theme.Put(join, Theme.Button("Устройства…"), 202, 211, 157, 39);
 
-            var statusPanel = Theme.Put(this, Theme.Card(15, true), 28, 435, 780, 38);
-            status = Theme.Put(statusPanel, Theme.Label("Готово к подключению", 10, Theme.Muted), 13, 0, 752, 38);
+            var statusPanel = Theme.Put(this, Theme.Card(19, true), 26, 441, 784, 38);
+            statusDot = Theme.Put(statusPanel, new Theme.StatusDot(), 13, 11, 16, 16);
+            status = Theme.Put(statusPanel, Theme.Label("Готово к подключению", 10, Theme.Muted), 36, 0, 730, 38);
             status.TextAlign = ContentAlignment.MiddleLeft;
-            approval = Theme.Put(this, Theme.Card(15), 28, 481, 780, 49);
+            approval = Theme.Put(this, Theme.Card(16), 26, 487, 784, 48);
             approval.Visible = false;
             prompt = Theme.Put(approval, Theme.Label("", 9.5f, Theme.Accent, true), 12, 3, 264, 42);
             prompt.TextAlign = ContentAlignment.MiddleLeft;
@@ -123,8 +125,17 @@ namespace ScreenShow
                 (sender, args) => Answer(Decision.Denied);
 
             foreach (var item in NetworkAddresses()) adapter.Items.Add(item);
+            adapter.Items.Add(new Adapter { Name = "Интернет через сервер" });
             if (adapter.Items.Count != 0) adapter.SelectedIndex = 0;
             RestoreHostAddress();
+            Action updateNetwork = () =>
+            {
+                var selected = (Adapter)adapter.SelectedItem;
+                network.Text = selected != null && selected.Address == null ? "Интернет через сервер" : "Локальная сеть / VPN";
+                UpdateControls();
+            };
+            adapter.SelectedIndexChanged += (sender, args) => updateNetwork();
+            updateNetwork();
             create.Click += (sender, args) => StartHost();
             copy.Click += (sender, args) => UseClipboard(() => Clipboard.SetText(ownCode.Text), "Приглашение скопировано.");
             stop.Click += (sender, args) => StopSession();
@@ -179,12 +190,16 @@ namespace ScreenShow
         {
             status.Text = message;
             status.ForeColor = color;
+            statusDot.ForeColor = color == Theme.Red ? Theme.Red : Theme.LiveDot;
+            statusDot.Invalidate();
         }
 
         private void UpdateControls()
         {
             bool idle = host == null && guest == null;
-            adapter.Enabled = port.Enabled = idle;
+            adapter.Enabled = idle;
+            var network = (Adapter)adapter.SelectedItem;
+            port.Enabled = idle && network != null && network.Address != null;
             devices.Enabled = idle || (host != null && ownCode.TextLength != 0 && !cancelled);
             create.Enabled = idle && adapter.SelectedItem != null;
             copy.Enabled = ownCode.TextLength != 0 && !cancelled;
@@ -202,8 +217,22 @@ namespace ScreenShow
         private void StartHost()
         {
             var address = (Adapter)adapter.SelectedItem;
-            var endpoint = new IPEndPoint(address.Address, (int)port.Value);
-            var session = new HostSession(endpoint.Address, endpoint.Port, pairs);
+            HostSession session;
+            string setting;
+            if (address.Address == null)
+            {
+                RelayAddress relay = AskRelay();
+                if (relay == null) return;
+                relayServer = relay.ToString();
+                setting = "relay:" + relayServer;
+                session = new HostSession(relay, pairs);
+            }
+            else
+            {
+                var endpoint = new IPEndPoint(address.Address, (int)port.Value);
+                setting = endpoint.ToString();
+                session = new HostSession(endpoint.Address, endpoint.Port, pairs);
+            }
             host = session;
             cancelled = false;
             SetStatus("Создаём защищённое приглашение…", Theme.Accent);
@@ -211,7 +240,7 @@ namespace ScreenShow
             Run(
                 () =>
                 {
-                    pairs.HostAddress = endpoint.ToString();
+                    pairs.HostAddress = setting;
                     session.Run(invitation => Post(() =>
                     {
                         if (cancelled) return;
@@ -220,7 +249,8 @@ namespace ScreenShow
                         if (hotkey) Native.UnregisterHotKey(Handle, StopHotkey);
                         hotkey = false;
                         ownCode.Text = invitation.ToString();
-                        SetStatus("Доступ открыт. Связанные устройства могут подключиться.", Theme.Success);
+                        SetStatus(invitation.Relay == null ? "Доступ открыт. Связанные устройства могут подключиться." :
+                            "Доступ через интернет открыт. Сервер-посредник подключён.", Theme.Success);
                         UpdateControls();
                     }),
                     RequestApproval,
@@ -259,7 +289,7 @@ namespace ScreenShow
                 if (deviceList != null) deviceList.Close();
                 pendingApproval = request;
                 ownCode.Clear();
-                prompt.Text = "Запрос на доступ от " + peer.Address;
+                prompt.Text = peer == null ? "Запрос на доступ через интернет" : "Запрос на доступ от " + peer.Address;
                 approval.Visible = true;
                 WindowState = FormWindowState.Normal;
                 Activate();
@@ -294,9 +324,10 @@ namespace ScreenShow
             var session = new ViewerSession(invitation);
             guest = session;
             cancelled = false;
-            SetStatus("Подключаемся к " + invitation.Endpoint + "…", Theme.Accent);
+            SetStatus(invitation.Relay == null ? "Подключаемся к " + invitation.DisplayAddress + "…" :
+                "Подключаемся через интернет…", Theme.Accent);
             UpdateControls();
-            var window = new ViewerForm(invitation.Endpoint.ToString(), session);
+            var window = new ViewerForm(invitation.DisplayAddress, session);
             viewer = window;
             window.FormClosed += (sender, args) => { if (guest == session && !cancelled) StopSession(); };
             Run(() => session.Run(
@@ -325,16 +356,61 @@ namespace ScreenShow
         {
             try
             {
-                string[] endpoint = pairs.HostAddress.Split(':');
+                string saved = pairs.HostAddress;
+                if (saved.StartsWith("relay:", StringComparison.Ordinal))
+                {
+                    relayServer = saved.Substring(6);
+                    adapter.SelectedIndex = adapter.Items.Count - 1;
+                    return;
+                }
+                string[] endpoint = saved.Split(':');
                 int value;
                 if (endpoint.Length != 2 || !int.TryParse(endpoint[1], out value) ||
                     value < port.Minimum || value > port.Maximum) return;
                 port.Value = value;
                 foreach (Adapter item in adapter.Items)
-                    if (item.Address.ToString() == endpoint[0]) { adapter.SelectedItem = item; break; }
+                    if (item.Address != null && item.Address.ToString() == endpoint[0]) { adapter.SelectedItem = item; break; }
             }
             catch (IOException) { }
             catch (System.Security.Cryptography.CryptographicException) { }
+        }
+
+        private RelayAddress AskRelay()
+        {
+            using (var dialog = new Form())
+            {
+                dialog.Text = "Подключение через интернет";
+                dialog.Icon = Theme.AppIcon;
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.MinimizeBox = dialog.MaximizeBox = false;
+                dialog.ClientSize = new Size(448, 205);
+                dialog.BackColor = Theme.Background;
+                var card = Theme.Put(dialog, Theme.Card(), 14, 14, 420, 177);
+                Theme.Put(card, Theme.Label("Адрес сервера-посредника", 12, bold: true), 15, 13, 390, 24);
+                var field = Theme.CodeField(card, 15, 43, 390, 38);
+                field.AccessibleName = "Адрес сервера-посредника";
+                field.Text = relayServer;
+                var hint = Theme.Put(card, Theme.Label("Введите публичное имя или IP и порт, например relay.example.org:47211.",
+                    9.5f, Theme.Muted), 15, 90, 390, 34);
+                var confirm = Theme.Put(card, Theme.Button("Открыть доступ", true), 15, 129, 180, 35);
+                var cancel = Theme.Put(card, Theme.Button("Отмена"), 203, 129, 96, 35);
+                cancel.DialogResult = DialogResult.Cancel;
+                dialog.AcceptButton = confirm;
+                dialog.CancelButton = cancel;
+                RelayAddress relay = null;
+                confirm.Click += (sender, args) =>
+                {
+                    try
+                    {
+                        relay = RelayAddress.Parse(field.Text);
+                        dialog.Close();
+                    }
+                    catch (FormatException error) { hint.Text = error.Message; hint.ForeColor = Theme.Red; }
+                };
+                dialog.ShowDialog(this);
+                return relay;
+            }
         }
 
         private void ShowDevices()

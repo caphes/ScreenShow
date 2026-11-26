@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -22,6 +23,7 @@ namespace ScreenShow
                 LiveHost(run);
                 ProtocolFixture(run, false);
                 ProtocolFixture(run, true);
+                RelayFixture(run);
                 return 0;
             }
             catch (Exception error)
@@ -29,6 +31,115 @@ namespace ScreenShow
                 Console.Error.WriteLine(error);
                 return 1;
             }
+        }
+
+        private static void RelayFixture(Action<Invitation, string> run)
+        {
+            string script = Path.GetFullPath(Path.Combine("relay", "server.js"));
+            var start = new ProcessStartInfo("node.exe", "\"" + script + "\"")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+            start.EnvironmentVariables["SCREENSHOW_RELAY_HOST"] = "127.0.0.1";
+            start.EnvironmentVariables["SCREENSHOW_RELAY_PORT"] = "0";
+            using (var relay = Process.Start(start))
+            {
+                try
+                {
+                    Task<string> line = Task.Run(() => relay.StandardOutput.ReadLine());
+                    const string prefix = "ScreenShow relay listening on ";
+                    if (!line.Wait(Timeout) || line.Result == null || !line.Result.StartsWith(prefix, StringComparison.Ordinal))
+                        throw new InvalidOperationException("The relay did not start.");
+                    CheckRelay(RelayAddress.Parse(line.Result.Substring(prefix.Length)), run);
+                }
+                finally
+                {
+                    if (!relay.HasExited) relay.Kill();
+                    relay.WaitForExit(Timeout);
+                }
+            }
+        }
+
+        private static void CheckRelay(RelayAddress address, Action<Invitation, string> run)
+        {
+            string folder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "relay-pairs");
+            var store = new PairStore(folder);
+            using (var ready = new BlockingCollection<Invitation>())
+            {
+                var host = new HostSession(address, store);
+                int approvals = 0;
+                Task worker = Task.Run(() => host.Run(ready.Add, (endpoint, cancellation) =>
+                {
+                    if (endpoint != null) throw new InvalidOperationException("Expected a relayed connection.");
+                    approvals++;
+                    return Decision.View;
+                }, decision => { }));
+                try
+                {
+                    Invitation code;
+                    if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Windows did not register with the relay.");
+                    using (var unregistered = new TcpClient())
+                    {
+                        bool refused = false;
+                        try { RelayTransport.Connect(unregistered, address, new byte[RelayTransport.KeySize], false); }
+                        catch (InvalidOperationException) { refused = true; }
+                        if (!refused) throw new InvalidOperationException("The relay accepted an unregistered route.");
+                    }
+                    var linked = ViewViaRelay(Invitation.Parse(code.ToString()));
+                    if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Windows did not return to the relay.");
+                    run(code, "relay");
+                    if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Windows did not return after Android.");
+                    ViewViaRelay(linked);
+                    if (approvals != 2) throw new InvalidOperationException("The relayed reconnect asked for approval.");
+                    Console.WriteLine("PASS: Windows and Android through relay, including discovery and trusted reconnect");
+                }
+                catch
+                {
+                    if (worker.IsFaulted) worker.GetAwaiter().GetResult();
+                    throw;
+                }
+                finally
+                {
+                    host.Stop();
+                    try { worker.Wait(Timeout); }
+                    catch (AggregateException error)
+                    {
+                        if (!(error.GetBaseException() is IOException) && !(error.GetBaseException() is ObjectDisposedException)
+                            && !(error.GetBaseException() is SocketException) && !(error.GetBaseException() is OperationCanceledException))
+                            throw;
+                    }
+                    if (Directory.Exists(folder))
+                    {
+                        foreach (string file in Directory.GetFiles(folder)) File.Delete(file);
+                        Directory.Delete(folder);
+                    }
+                }
+            }
+        }
+
+        private static Invitation ViewViaRelay(Invitation code)
+        {
+            var viewer = new ViewerSession(code);
+            Invitation linked = null;
+            bool seen = false;
+            try
+            {
+                viewer.Run(() => { }, decision =>
+                {
+                    if (decision != Decision.View) throw new InvalidOperationException("Wrong relayed permission.");
+                }, image =>
+                {
+                    using (image) seen = image.Width > 0;
+                    viewer.Stop();
+                }, result => linked = result);
+            }
+            catch (IOException) { if (!seen) throw; }
+            catch (ObjectDisposedException) { if (!seen) throw; }
+            if (!seen || linked == null || linked.Relay == null)
+                throw new InvalidOperationException("No relayed frame or saved pairing.");
+            return linked;
         }
 
         private static void LiveHost(Action<Invitation, string> run)

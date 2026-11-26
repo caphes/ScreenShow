@@ -27,37 +27,65 @@ namespace ScreenShow
             StartPosition = FormStartPosition.CenterScreen;
             Size resolution = Screen.PrimaryScreen.WorkingArea.Size;
             ClientSize = new Size(Math.Min(1120, resolution.Width - 60), Math.Min(770, resolution.Height - 80));
-            MinimumSize = new Size(700, 300);
+            MinimumSize = new Size(780, 300);
             AutoScaleDimensions = new SizeF(96, 96);
             AutoScaleMode = AutoScaleMode.Dpi;
 
-            var bar = new Panel { Dock = DockStyle.Top, Height = 57, BackColor = Theme.Panel };
-            mode = Theme.Put(bar, Theme.Label("", 10, Theme.Accent, true), 16, 8, 155, 36);
+            var bar = new TableLayoutPanel
+            {
+                Dock = DockStyle.Bottom, Height = 64, BackColor = Theme.Background,
+                ColumnCount = 3, RowCount = 1, Padding = new Padding(12, 0, 12, 0)
+            };
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 164));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 354));
+            bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var indicator = Theme.Card(18, true);
+            indicator.Size = new Size(160, 38);
+            indicator.Anchor = AnchorStyles.Left;
+            indicator.Margin = Padding.Empty;
+            Theme.Put(indicator, new Theme.StatusDot(), 7, 11, 16, 16);
+            mode = Theme.Put(indicator, Theme.Label("", 9, Theme.Accent, true), 26, 0, 132, 38);
             mode.TextAlign = ContentAlignment.MiddleLeft;
-            var zoomOut = Theme.Put(bar, Theme.Button("−"), 170, 11, 34, 35);
-            var zoomIn = Theme.Put(bar, Theme.Button("+"), 209, 11, 34, 35);
-            var reset = Theme.Put(bar, Theme.Button("По размеру"), 248, 11, 108, 35);
+            bar.Controls.Add(indicator, 0, 0);
+
+            var zoomGroup = Theme.Card(14);
+            zoomGroup.Size = new Size(208, 44);
+            zoomGroup.Anchor = AnchorStyles.None;
+            zoomGroup.Margin = Padding.Empty;
+            var zoomOut = Theme.Put(zoomGroup, Theme.Button("−"), 5, 5, 34, 34);
+            var zoomIn = Theme.Put(zoomGroup, Theme.Button("+"), 86, 5, 34, 34);
+            var zoomAmount = Theme.Put(zoomGroup, Theme.Label("100%", 9, Theme.Muted, true), 40, 5, 45, 34);
+            zoomAmount.TextAlign = ContentAlignment.MiddleCenter;
+            var reset = Theme.Put(zoomGroup, Theme.Button("По размеру"), 123, 5, 80, 34);
+            reset.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
             zoomOut.AccessibleName = "Уменьшить экран";
             zoomIn.AccessibleName = "Приблизить экран";
+            bar.Controls.Add(zoomGroup, 1, 0);
+
             var buttons = new FlowLayoutPanel
             {
-                Dock = DockStyle.Right, Width = 314, FlowDirection = FlowDirection.RightToLeft,
-                WrapContents = false, Padding = new Padding(0, 8, 8, 0)
+                Anchor = AnchorStyles.Right, Width = 354, Height = 42, FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false, Margin = Padding.Empty
             };
             var disconnect = Theme.Button("Отключиться", danger: true);
             fullscreen = Theme.Button("На весь экран");
             input = Theme.Button("Включить ввод", true);
             foreach (var button in new[] { disconnect, fullscreen, input })
             {
-                button.Size = new Size(96, 35);
+                button.Size = new Size(112, 35);
                 button.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
                 buttons.Controls.Add(button);
             }
-            bar.Controls.Add(buttons);
+            bar.Controls.Add(buttons, 2, 0);
+            var viewport = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 12, 12, 0) };
             surface = new ScreenSurface(session) { Dock = DockStyle.Fill };
-            Controls.Add(surface);
+            viewport.Controls.Add(surface);
+            Controls.Add(viewport);
             Controls.Add(bar);
 
+            surface.ZoomChanged += (sender, args) => zoomAmount.Text = surface.ZoomPercentage + "%";
             disconnect.Click += (sender, args) => Close();
             zoomOut.Click += (sender, args) => surface.Zoom(1 / 1.25);
             zoomIn.Click += (sender, args) => surface.Zoom(1.25);
@@ -158,6 +186,8 @@ namespace ScreenShow
         private double zoom = 1, panX, panY;
         private bool panning;
         private Point dragPoint;
+        internal event EventHandler ZoomChanged;
+        internal int ZoomPercentage { get { return (int)Math.Round(zoom * 100); } }
 
         internal ScreenSurface(ViewerSession session)
         {
@@ -212,6 +242,7 @@ namespace ScreenShow
             panX += focus.X - (after.X + (focus.X - before.X) * (double)after.Width / before.Width);
             panY += focus.Y - (after.Y + (focus.Y - before.Y) * (double)after.Height / before.Height);
             Invalidate();
+            if (ZoomChanged != null) ZoomChanged(this, EventArgs.Empty);
         }
 
         internal void ResetZoom()
@@ -219,6 +250,7 @@ namespace ScreenShow
             zoom = 1;
             panX = panY = 0;
             Invalidate();
+            if (ZoomChanged != null) ZoomChanged(this, EventArgs.Empty);
         }
 
         protected override void OnPaint(PaintEventArgs e)

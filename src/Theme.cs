@@ -7,11 +7,11 @@ namespace ScreenShow
 {
     internal static class Theme
     {
-        internal static readonly Color Background = Color.FromArgb(239, 246, 241);
+        internal static readonly Color Background = Color.FromArgb(242, 248, 244);
         internal static readonly Color Panel = Color.White;
-        internal static readonly Color Field = Color.FromArgb(230, 241, 234);
-        internal static readonly Color Border = Color.FromArgb(218, 232, 222);
-        internal static readonly Color ViewerBackground = Color.FromArgb(12, 26, 20);
+        internal static readonly Color Field = Color.FromArgb(232, 242, 236);
+        internal static readonly Color Border = Color.FromArgb(211, 229, 219);
+        internal static readonly Color ViewerBackground = Color.FromArgb(11, 23, 18);
         internal static readonly Color ViewerHint = Color.FromArgb(174, 202, 187);
         internal static readonly Color Ink = Color.FromArgb(20, 44, 34);
         internal static readonly Color Muted = Color.FromArgb(73, 99, 86);
@@ -19,6 +19,8 @@ namespace ScreenShow
         internal static readonly Color Success = Color.FromArgb(17, 105, 60);
         internal static readonly Color Red = Color.FromArgb(159, 42, 57);
         internal static readonly Color DangerFill = Color.FromArgb(252, 234, 236);
+        internal static readonly Color HeroLight = Color.FromArgb(204, 232, 215);
+        internal static readonly Color LiveDot = Color.FromArgb(34, 147, 92);
         private static readonly System.Lazy<Icon> markIcon = new System.Lazy<Icon>(CreateIcon);
 
         internal static Icon AppIcon { get { return markIcon.Value; } }
@@ -29,6 +31,7 @@ namespace ScreenShow
             {
                 Text = text,
                 ForeColor = color ?? Ink,
+                BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular),
                 AutoSize = false
             };
@@ -60,15 +63,20 @@ namespace ScreenShow
             };
         }
 
-        internal static Panel Card(int radius = 20, bool tinted = false)
+        internal static Panel Card(int radius = 22, bool tinted = false)
         {
             return new RoundedPanel(radius) { BackColor = tinted ? Field : Panel };
         }
 
+        internal static Panel Hero()
+        {
+            return new RoundedPanel(26, HeroLight) { BackColor = Color.FromArgb(233, 246, 238) };
+        }
+
         internal static TextBox CodeField(Panel parent, int x, int y, int width, int height)
         {
-            var field = Put(parent, Card(10, true), x, y, width, height);
-            return Put(field, TextBox(), 10, 9, width - 20, height - 18);
+            var field = Put(parent, Card(14, true), x, y, width, height);
+            return Put(field, TextBox(), 12, (height - 19) / 2, width - 24, 19);
         }
 
         internal static void StyleDropDown(ComboBox box)
@@ -103,10 +111,12 @@ namespace ScreenShow
         private sealed class RoundedPanel : Panel
         {
             private readonly int radius;
+            private readonly Color? gradientEnd;
 
-            internal RoundedPanel(int radius)
+            internal RoundedPanel(int radius, Color? gradientEnd = null)
             {
                 this.radius = radius;
+                this.gradientEnd = gradientEnd;
                 DoubleBuffered = true;
                 ResizeRedraw = true;
             }
@@ -117,7 +127,8 @@ namespace ScreenShow
                 if (Width < 2 || Height < 2) return;
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                 using (var path = Rounded(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), radius))
-                using (var fill = new SolidBrush(BackColor))
+                using (Brush fill = gradientEnd.HasValue ?
+                    (Brush)new LinearGradientBrush(ClientRectangle, BackColor, gradientEnd.Value, 12f) : new SolidBrush(BackColor))
                 using (var outline = new Pen(Border))
                 {
                     e.Graphics.FillPath(fill, path);
@@ -141,15 +152,17 @@ namespace ScreenShow
             {
                 e.Graphics.Clear(Parent == null ? Background : Parent.BackColor);
                 if (Width < 3 || Height < 3) return;
-                Color fill = Enabled ? BackColor : Field;
+                Color fill = Enabled ? BackColor : Color.FromArgb(238, 244, 240);
                 if (Enabled && (hover || pressed)) fill = ControlPaint.Dark(fill, pressed ? 0.09f : 0.04f);
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var path = Rounded(new RectangleF(1, 1, Width - 2, Height - 2), 11))
-                using (var brush = new SolidBrush(fill))
+                using (var path = Rounded(new RectangleF(1, 1, Width - 2, Height - 2), 16))
+                using (Brush brush = Enabled && BackColor == Accent ?
+                    (Brush)new LinearGradientBrush(ClientRectangle, Color.FromArgb(43, 124, 90), fill, 84f) : new SolidBrush(fill))
                 {
                     e.Graphics.FillPath(brush, path);
                     if (Focused && ShowFocusCues)
-                        using (var focus = new Pen(Accent, 1.5f)) e.Graphics.DrawPath(focus, path);
+                        using (var focus = new Pen(BackColor == Accent ? Color.White : Accent, 1.5f))
+                            e.Graphics.DrawPath(focus, path);
                 }
                 TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Enabled ? ForeColor : Muted,
                     TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter |
@@ -162,13 +175,71 @@ namespace ScreenShow
             protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); pressed = false; Invalidate(); }
         }
 
-        internal sealed class Mark : Control
+        internal sealed class ConnectionArt : Control
         {
-            internal Mark() { DoubleBuffered = true; TabStop = false; }
+            internal ConnectionArt()
+            {
+                SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer, true);
+                BackColor = Color.Transparent;
+                TabStop = false;
+            }
 
             protected override void OnPaint(PaintEventArgs e)
             {
-                DrawMark(e.Graphics, Width, Height);
+                var graphics = e.Graphics;
+                graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                graphics.ScaleTransform(Width / 258f, Height / 126f);
+                using (var glow = new SolidBrush(Color.FromArgb(50, Color.White)))
+                using (var orbit = new Pen(Color.FromArgb(62, Accent), 1.2f))
+                using (var display = Rounded(new RectangleF(32, 14, 151, 83), 16))
+                using (var phone = Rounded(new RectangleF(165, 39, 52, 73), 13))
+                using (var glass = new SolidBrush(Color.FromArgb(199, 248, 255, 251)))
+                using (var screen = new SolidBrush(Color.FromArgb(19, 93, 64)))
+                using (var line = new Pen(Color.FromArgb(133, 196, 162), 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                using (var signal = new SolidBrush(Color.FromArgb(186, 241, 207)))
+                {
+                    graphics.FillEllipse(glow, 5, 0, 243, 126);
+                    graphics.DrawEllipse(orbit, 11, 4, 228, 117);
+                    graphics.DrawEllipse(orbit, 24, 13, 202, 100);
+                    graphics.FillPath(glass, display);
+                    graphics.DrawPath(orbit, display);
+                    using (var inset = Rounded(new RectangleF(40, 22, 135, 64), 10))
+                        graphics.FillPath(screen, inset);
+                    graphics.DrawLine(line, 107, 97, 107, 105);
+                    graphics.DrawLine(line, 91, 106, 123, 106);
+                    graphics.DrawEllipse(line, 91, 38, 32, 32);
+                    graphics.FillEllipse(signal, 101, 48, 12, 12);
+                    graphics.FillPath(glass, phone);
+                    graphics.DrawPath(orbit, phone);
+                    using (var inset = Rounded(new RectangleF(171, 46, 40, 53), 8))
+                        graphics.FillPath(screen, inset);
+                    graphics.DrawEllipse(line, 183, 65, 16, 16);
+                    graphics.FillEllipse(signal, 188, 70, 6, 6);
+                    graphics.DrawLine(line, 184, 105, 198, 105);
+                }
+            }
+        }
+
+        internal sealed class StatusDot : Control
+        {
+            internal StatusDot()
+            {
+                SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer, true);
+                BackColor = Color.Transparent;
+                ForeColor = LiveDot;
+                TabStop = false;
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                int diameter = System.Math.Max(2, System.Math.Min(Width, Height) - 6);
+                using (var glow = new SolidBrush(Color.FromArgb(36, ForeColor)))
+                using (var core = new SolidBrush(ForeColor))
+                {
+                    e.Graphics.FillEllipse(glow, 0, 0, Width, Height);
+                    e.Graphics.FillEllipse(core, (Width - diameter) / 2f, (Height - diameter) / 2f, diameter, diameter);
+                }
             }
         }
 
