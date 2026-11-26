@@ -1,0 +1,5 @@
+bin/
+*.user
+android/.sdk/
+android/.build/
+android/.signing/
