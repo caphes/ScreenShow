@@ -50,72 +50,76 @@ namespace ScreenShow
         {
             SuspendLayout();
             Text = "ScreenShow";
+            Icon = Theme.AppIcon;
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
-            ClientSize = new Size(800, 515);
+            ClientSize = new Size(836, 543);
             AutoScaleDimensions = new SizeF(96, 96);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Background;
             ForeColor = Theme.Ink;
             Font = new Font("Segoe UI", 10);
 
-            var badge = Theme.Put(this, Theme.Label("▣", 23, Theme.Accent, true), 24, 23, 38, 47);
-            badge.TextAlign = ContentAlignment.MiddleLeft;
-            Theme.Put(this, Theme.Label("ScreenShow", 26, bold: true), 67, 22, 315, 49);
-            Theme.Put(this, Theme.Label("Демонстрация экрана и удалённое управление", 10.5f, Theme.Muted),
-                69, 76, 550, 25);
-            var network = Theme.Put(this, Theme.Label("Локальная сеть / VPN", 10, Theme.Accent, true), 603, 37, 172, 25);
-            network.TextAlign = ContentAlignment.MiddleRight;
+            Theme.Put(this, new Theme.Mark(), 28, 32, 62, 62);
+            Theme.Put(this, Theme.Label("ScreenShow", 28, bold: true), 104, 27, 400, 48);
+            Theme.Put(this, Theme.Label("Демонстрация экрана и удалённое управление", 11, Theme.Muted),
+                106, 79, 500, 25);
+            var networkPill = Theme.Put(this, Theme.Card(17, true), 628, 44, 180, 34);
+            var network = Theme.Put(networkPill, Theme.Label("Локальная сеть / VPN", 9.5f, Theme.Accent, true), 4, 1, 172, 32);
+            network.TextAlign = ContentAlignment.MiddleCenter;
 
-            var share = Theme.Put(this, new Panel { BackColor = Theme.Panel }, 24, 123, 366, 270);
-            Theme.Put(share, Theme.Label("Показать мой экран", 15, bold: true), 17, 13, 332, 32);
-            Theme.Put(share, Theme.Label("Откройте доступ для своих устройств.", 9.5f, Theme.Muted), 18, 51, 334, 24);
-            Theme.Put(share, Theme.Label("Сетевой адрес", 9, Theme.Muted), 18, 84, 230, 21);
-            Theme.Put(share, Theme.Label("Порт", 9, Theme.Muted), 268, 84, 80, 21);
+            var share = Theme.Put(this, Theme.Card(), 28, 127, 380, 296);
+            Theme.Put(share, Theme.Label("Показать мой экран", 17, bold: true), 20, 16, 338, 34);
+            Theme.Put(share, Theme.Label("Откройте доступ для своих устройств.", 10, Theme.Muted), 20, 53, 340, 27);
+            Theme.Put(share, Theme.Label("Сетевой адрес", 9.5f, Theme.Muted, true), 21, 91, 234, 21);
+            Theme.Put(share, Theme.Label("Порт", 9.5f, Theme.Muted, true), 279, 91, 78, 21);
             adapter = Theme.Put(share, new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Theme.Field, ForeColor = Theme.Ink,
                 FlatStyle = FlatStyle.Flat, DropDownWidth = 300, AccessibleName = "Сетевой адрес"
-            }, 18, 109, 239, 27);
-            port = Theme.Put(share, new NumericUpDown
+            }, 21, 116, 246, 27);
+            Theme.StyleDropDown(adapter);
+            var portField = Theme.Put(share, Theme.Card(8, true), 279, 113, 80, 30);
+            port = Theme.Put(portField, new NumericUpDown
             {
                 Minimum = 1024, Maximum = 65535, Value = 47210,
-                BackColor = Theme.Field, ForeColor = Theme.Ink, AccessibleName = "Порт"
-            }, 268, 109, 80, 27);
-            Theme.Put(share, Theme.Label("Ваше приглашение", 9, Theme.Muted), 18, 150, 300, 20);
-            ownCode = Theme.Put(share, Theme.TextBox(), 18, 173, 222, 27);
+                BackColor = Theme.Field, ForeColor = Theme.Ink, BorderStyle = BorderStyle.None, AccessibleName = "Порт"
+            }, 7, 5, 68, 23);
+            Theme.Put(share, Theme.Label("Ваше приглашение", 9.5f, Theme.Muted, true), 21, 155, 300, 20);
+            ownCode = Theme.CodeField(share, 21, 180, 224, 36);
             ownCode.ReadOnly = true;
             ownCode.AccessibleName = "Ваше приглашение";
-            copy = Theme.Put(share, Theme.Button("Копировать"), 249, 171, 99, 31);
-            create = Theme.Put(share, Theme.Button("Открыть доступ", true), 18, 216, 211, 37);
-            stop = Theme.Put(share, Theme.Button("Остановить"), 238, 216, 110, 37);
-            stop.ForeColor = Theme.Red;
+            copy = Theme.Put(share, Theme.Button("Копировать"), 253, 180, 106, 36);
+            create = Theme.Put(share, Theme.Button("Открыть доступ", true), 21, 235, 218, 40);
+            stop = Theme.Put(share, Theme.Button("Остановить", danger: true), 247, 235, 112, 40);
 
-            var join = Theme.Put(this, new Panel { BackColor = Theme.Panel }, 410, 123, 366, 270);
-            Theme.Put(join, Theme.Label("Подключиться", 15, bold: true), 17, 13, 332, 32);
-            Theme.Put(join, Theme.Label("Вставьте приглашение, полученное от владельца.", 9.5f, Theme.Muted),
-                18, 51, 330, 40);
-            Theme.Put(join, Theme.Label("Код приглашения", 9, Theme.Muted), 18, 101, 300, 21);
-            otherCode = Theme.Put(join, Theme.TextBox(), 18, 125, 236, 27);
+            var join = Theme.Put(this, Theme.Card(), 428, 127, 380, 296);
+            Theme.Put(join, Theme.Label("Подключиться", 17, bold: true), 20, 16, 338, 34);
+            Theme.Put(join, Theme.Label("Вставьте приглашение, полученное от владельца.", 10, Theme.Muted),
+                20, 53, 340, 29);
+            Theme.Put(join, Theme.Label("Код приглашения", 9.5f, Theme.Muted, true), 21, 91, 300, 21);
+            otherCode = Theme.CodeField(join, 21, 116, 233, 36);
             otherCode.MaxLength = 256;
             otherCode.AccessibleName = "Код приглашения";
-            paste = Theme.Put(join, Theme.Button("Вставить"), 262, 123, 86, 31);
-            Theme.Put(join, Theme.Label("Код нужен при первой привязке. Каждый сеанс подтверждается на ПК.",
-                9.5f, Theme.Muted), 18, 164, 330, 43);
-            connect = Theme.Put(join, Theme.Button("Подключиться", true), 18, 216, 168, 37);
-            devices = Theme.Put(join, Theme.Button("Устройства…"), 196, 216, 152, 37);
+            paste = Theme.Put(join, Theme.Button("Вставить"), 262, 116, 97, 36);
+            Theme.Put(join, Theme.Label("Код и подтверждение нужны при первой привязке.",
+                10, Theme.Muted), 21, 170, 338, 43);
+            connect = Theme.Put(join, Theme.Button("Подключиться", true), 21, 235, 173, 40);
+            devices = Theme.Put(join, Theme.Button("Устройства…"), 202, 235, 157, 40);
 
-            status = Theme.Put(this, Theme.Label("Готово к подключению", 10, Theme.Muted), 25, 411, 750, 31);
+            var statusPanel = Theme.Put(this, Theme.Card(15, true), 28, 435, 780, 38);
+            status = Theme.Put(statusPanel, Theme.Label("Готово к подключению", 10, Theme.Muted), 13, 0, 752, 38);
             status.TextAlign = ContentAlignment.MiddleLeft;
-            approval = Theme.Put(this, new Panel { BackColor = Theme.Panel, Visible = false }, 24, 451, 752, 48);
+            approval = Theme.Put(this, Theme.Card(15), 28, 481, 780, 49);
+            approval.Visible = false;
             prompt = Theme.Put(approval, Theme.Label("", 9.5f, Theme.Accent, true), 12, 3, 264, 42);
             prompt.TextAlign = ContentAlignment.MiddleLeft;
             Theme.Put(approval, Theme.Button("Только просмотр"), 283, 8, 143, 32).Click +=
                 (sender, args) => Answer(Decision.View);
             Theme.Put(approval, Theme.Button("Разрешить управление", true), 435, 8, 182, 32).Click +=
                 (sender, args) => Answer(Decision.Control);
-            Theme.Put(approval, Theme.Button("Отклонить"), 626, 8, 114, 32).Click +=
+            Theme.Put(approval, Theme.Button("Отклонить", danger: true), 626, 8, 140, 32).Click +=
                 (sender, args) => Answer(Decision.Denied);
 
             foreach (var item in NetworkAddresses()) adapter.Items.Add(item);
@@ -223,6 +227,9 @@ namespace ScreenShow
                     access => Post(() =>
                     {
                         if (cancelled) return;
+                        if (deviceList != null) deviceList.Close();
+                        ownCode.Clear();
+                        UpdateControls();
                         TopMost = true;
                         WindowState = FormWindowState.Normal;
                         hotkey = Native.RegisterHotKey(Handle, StopHotkey, 0x4003, (uint)Keys.F12);
@@ -256,7 +263,7 @@ namespace ScreenShow
                 approval.Visible = true;
                 WindowState = FormWindowState.Normal;
                 Activate();
-                SetStatus("Подтвердите подключение на этом компьютере.", Theme.Accent);
+                SetStatus("Выбранный режим сохранится для этого устройства.", Theme.Accent);
                 UpdateControls();
             });
             request.Task.Wait(cancellation);
@@ -295,20 +302,16 @@ namespace ScreenShow
             Run(() => session.Run(
                 () => Post(() =>
                 {
-                    if (!cancelled) SetStatus("Ожидаем подтверждение на втором компьютере…", Theme.Accent);
+                    if (!cancelled) SetStatus("Открываем защищённый сеанс…", Theme.Accent);
                 }),
-                access =>
+                access => Post(() =>
                 {
-                    if (invitation.Paired) pairs.SaveOutgoing(invitation);
-                    Post(() =>
-                    {
-                        if (cancelled) return;
-                        otherCode.Clear();
-                        SetStatus("Сеанс открыт в отдельном окне.", Theme.Success);
-                        window.Start(access == Decision.Control);
-                    });
-                },
-                window.Submit),
+                    if (cancelled) return;
+                    otherCode.Clear();
+                    SetStatus("Сеанс открыт в отдельном окне.", Theme.Success);
+                    window.Start(access == Decision.Control);
+                }),
+                window.Submit, pairs.SaveOutgoing),
                 error =>
                 {
                     guest = null;
@@ -341,9 +344,10 @@ namespace ScreenShow
                 using (var window = new Form())
                 {
                     window.Text = "Связанные устройства";
+                    window.Icon = Theme.AppIcon;
                     window.StartPosition = FormStartPosition.CenterParent;
                     window.FormBorderStyle = FormBorderStyle.FixedDialog;
-                    window.ClientSize = new Size(490, 309);
+                    window.ClientSize = new Size(490, 350);
                     window.MinimizeBox = window.MaximizeBox = false;
                     window.BackColor = Theme.Background;
                     Theme.Put(window, Theme.Label("Компьютеры для подключения", bold: true), 14, 14, 220, 24);
@@ -354,14 +358,39 @@ namespace ScreenShow
                     incoming.Items.AddRange(pairs.Devices(true));
                     var open = Theme.Put(window, Theme.Button("Подключиться", true), 14, 259, 119, 36);
                     var removeOut = Theme.Put(window, Theme.Button("Забыть"), 142, 259, 96, 36);
-                    var removeIn = Theme.Put(window, Theme.Button("Отвязать"), 252, 259, 113, 36);
+                    var access = Theme.Put(window, new ComboBox
+                    {
+                        DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Разрешение связанного устройства",
+                        BackColor = Theme.Field, ForeColor = Theme.Ink
+                    }, 252, 259, 224, 30);
+                    Theme.StyleDropDown(access);
+                    access.Items.AddRange(new object[] { "Только просмотр", "Просмотр и управление" });
+                    var removeIn = Theme.Put(window, Theme.Button("Отвязать"), 252, 300, 113, 36);
                     open.Enabled = removeOut.Enabled = removeIn.Enabled = false;
+                    access.Enabled = false;
                     outgoing.SelectedIndexChanged += (sender, args) =>
                     {
                         removeOut.Enabled = outgoing.SelectedIndex >= 0;
                         open.Enabled = removeOut.Enabled && host == null;
                     };
-                    incoming.SelectedIndexChanged += (sender, args) => removeIn.Enabled = incoming.SelectedIndex >= 0;
+                    incoming.SelectedIndexChanged += (sender, args) =>
+                    {
+                        var device = (PairedDevice)incoming.SelectedItem;
+                        access.Enabled = removeIn.Enabled = device != null;
+                        access.SelectedIndex = device == null ? -1 : device.Access == Decision.Control ? 1 : 0;
+                    };
+                    access.SelectionChangeCommitted += (sender, args) =>
+                    {
+                        var device = (PairedDevice)incoming.SelectedItem;
+                        if (device == null) return;
+                        try { incoming.Items[incoming.SelectedIndex] = pairs.ChangeAccess(device,
+                            access.SelectedIndex == 1 ? Decision.Control : Decision.View); }
+                        catch (IOException)
+                        {
+                            access.SelectedIndex = device.Access == Decision.Control ? 1 : 0;
+                            MessageBox.Show(window, "Не удалось изменить режим доступа.", "ScreenShow");
+                        }
+                    };
                     PairedDevice selected = null;
                     open.Click += (sender, args) => { selected = (PairedDevice)outgoing.SelectedItem; window.Close(); };
                     Action<ListBox> remove = list =>

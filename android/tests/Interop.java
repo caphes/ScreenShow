@@ -14,10 +14,12 @@ public final class Interop implements RemoteSession.Listener {
     private final CountDownLatch done = new CountDownLatch(1);
     private final String scenario;
     private final RemoteSession remote;
+    private final String enteredCode;
     private boolean authorized, received, error;
 
     private Interop(String code, String scenario) {
         this.scenario = scenario;
+        enteredCode = code;
         RemoteSession.Invitation invitation = RemoteSession.Invitation.parse(code);
         if (invitation.canSave() != scenario.equals("text"))
             throw new AssertionError("Unexpected invitation persistence for " + scenario);
@@ -41,10 +43,11 @@ public final class Interop implements RemoteSession.Listener {
 
     @Override public void waiting() { }
 
-    @Override public void connected(boolean control, boolean text) {
+    @Override public void connected(boolean control, boolean text, RemoteSession.Invitation linked) {
         boolean expectedControl = !scenario.equals("view");
         boolean expectedText = scenario.equals("text");
-        authorized = control == expectedControl && text == expectedText;
+        authorized = control == expectedControl && text == expectedText &&
+            (expectedText ? linked.privatePairToken() && !linked.code.equals(enteredCode) : linked.code.equals(enteredCode));
         if (expectedText) remote.queue(new RemoteSession.Command(RemoteSession.TEXT, 0, 0, 0x416));
     }
 

@@ -37,7 +37,7 @@ final class RemoteScreen extends View {
         });
         scale.setQuickScaleEnabled(false);
         scale.setStylusScaleEnabled(false);
-        labelPaint.setColor(MainActivity.MUTED);
+        labelPaint.setColor(MainActivity.VIEW_HINT);
         labelPaint.setTextAlign(Paint.Align.CENTER);
         labelPaint.setTextSize(15 * getResources().getDisplayMetrics().scaledDensity);
         setBackgroundColor(MainActivity.VIEW_BACKGROUND);

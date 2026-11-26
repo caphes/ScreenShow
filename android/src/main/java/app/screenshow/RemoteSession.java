@@ -49,7 +49,7 @@ final class RemoteSession {
 
         static Invitation parse(String value) {
             String code = value.trim();
-            if ((!code.startsWith("SS1-") && !code.startsWith("SS2-")) || code.length() != 87)
+            if ((!code.startsWith("SS1-") && !code.startsWith("SS2-") && !code.startsWith("SS3-")) || code.length() != 87)
                 throw new IllegalArgumentException("Вставьте приглашение ScreenShow.");
             byte[] data;
             try {
@@ -71,7 +71,16 @@ final class RemoteSession {
             }
         }
 
-        boolean canSave() { return code.startsWith("SS2-"); }
+        boolean canSave() { return code.startsWith("SS2-") || privatePairToken(); }
+
+        boolean privatePairToken() { return code.startsWith("SS3-"); }
+
+        Invitation withToken(byte[] secret) {
+            byte[] data = Base64.getUrlDecoder().decode(code.substring(4));
+            System.arraycopy(secret, 0, data, 6, token.length);
+            return new Invitation(address, secret, fingerprint,
+                "SS3-" + Base64.getUrlEncoder().withoutPadding().encodeToString(data));
+        }
 
         String deviceKey() { return Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint); }
     }
@@ -101,7 +110,7 @@ final class RemoteSession {
 
     interface Listener {
         void waiting();
-        void connected(boolean control, boolean text);
+        void connected(boolean control, boolean text, Invitation linked);
         void frame(byte[] jpeg) throws IOException;
         void ended(String message, boolean error);
     }
@@ -128,7 +137,7 @@ final class RemoteSession {
         try {
             SSLContext tls = SSLContext.getInstance("TLS");
             tls.init(null, new TrustManager[] { new PinnedServer(invitation.fingerprint) }, null);
-            if (!connect(tls, true) && !connect(tls, false))
+            if (!connect(tls, true) && (invitation.privatePairToken() || !connect(tls, false)))
                 throw new IOException("Приглашение недействительно. Запросите новое.");
         } catch (EOFException ignored) {
             // The host closed the session.
@@ -175,7 +184,8 @@ final class RemoteSession {
                 tls.startHandshake();
                 OutputStream output = tls.getOutputStream();
                 byte[] hello = new byte[28];
-                byte[] version = (mobile ? "SSM1" : "SSH1").getBytes(StandardCharsets.US_ASCII);
+                String greeting = invitation.privatePairToken() ? "SSM2" : mobile ? "SSM1" : "SSH1";
+                byte[] version = greeting.getBytes(StandardCharsets.US_ASCII);
                 System.arraycopy(version, 0, hello, 0, version.length);
                 System.arraycopy(invitation.token, 0, hello, version.length, invitation.token.length);
                 output.write(hello);
@@ -189,12 +199,18 @@ final class RemoteSession {
                 if (decision != 1 && decision != 2) throw new IOException("Получен неизвестный ответ от компьютера.");
 
                 tls.setSoTimeout(TIMEOUT);
+                Invitation linked = invitation;
+                if (invitation.privatePairToken()) {
+                    byte[] secret = new byte[invitation.token.length];
+                    input.readFully(secret);
+                    linked = invitation.withToken(secret);
+                }
                 synchronized (this) {
                     if (stopped) return true;
                     canControl = decision == 2;
                     if (canControl) new Thread(() -> writeCommands(output), "ScreenShow sender").start();
                 }
-                listener.connected(decision == 2, mobile && decision == 2);
+                listener.connected(decision == 2, mobile && decision == 2, linked);
                 while (true) listener.frame(readFrame(input));
             }
         }

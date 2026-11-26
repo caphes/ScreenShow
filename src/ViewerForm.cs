@@ -22,6 +22,7 @@ namespace ScreenShow
         internal ViewerForm(string endpoint, ViewerSession session)
         {
             Text = "ScreenShow — " + endpoint;
+            Icon = Theme.AppIcon;
             BackColor = Theme.Background;
             StartPosition = FormStartPosition.CenterScreen;
             Size resolution = Screen.PrimaryScreen.WorkingArea.Size;
@@ -43,8 +44,7 @@ namespace ScreenShow
                 Dock = DockStyle.Right, Width = 314, FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false, Padding = new Padding(0, 8, 8, 0)
             };
-            var disconnect = Theme.Button("Отключиться");
-            disconnect.ForeColor = Theme.Red;
+            var disconnect = Theme.Button("Отключиться", danger: true);
             fullscreen = Theme.Button("На весь экран");
             input = Theme.Button("Включить ввод", true);
             foreach (var button in new[] { disconnect, fullscreen, input })
@@ -225,7 +225,7 @@ namespace ScreenShow
         {
             if (image == null)
             {
-                TextRenderer.DrawText(e.Graphics, "Ожидаем изображение…", Font, ClientRectangle, Theme.Muted,
+                TextRenderer.DrawText(e.Graphics, "Ожидаем изображение…", Font, ClientRectangle, Theme.ViewerHint,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 return;
             }

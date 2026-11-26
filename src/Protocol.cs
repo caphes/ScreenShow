@@ -15,6 +15,7 @@ namespace ScreenShow
     {
         private const string Prefix = "SS1-";
         private const string PairPrefix = "SS2-";
+        private const string PrivatePairPrefix = "SS3-";
         internal const int TokenSize = 24;
         internal const int FingerprintSize = 32;
         private const int Size = 4 + 2 + TokenSize + FingerprintSize;
@@ -22,21 +23,35 @@ namespace ScreenShow
         internal readonly byte[] Token;
         internal readonly byte[] Fingerprint;
         internal readonly bool Paired;
+        internal readonly bool PrivatePairToken;
 
-        internal Invitation(IPEndPoint endpoint, byte[] token, byte[] fingerprint, bool paired = false)
+        internal Invitation(IPEndPoint endpoint, byte[] token, byte[] fingerprint, bool paired = false,
+            bool privatePairToken = false)
         {
             Endpoint = endpoint;
             Token = token;
             Fingerprint = fingerprint;
             Paired = paired;
+            PrivatePairToken = privatePairToken;
         }
 
-        internal static Invitation Create(IPEndPoint endpoint, X509Certificate2 certificate, bool paired = false)
+        internal static Invitation Create(IPEndPoint endpoint, X509Certificate2 certificate, bool paired = false,
+            bool privatePairToken = false)
+        {
+            return new Invitation(endpoint, NewToken(), Protocol.Fingerprint(certificate), paired, privatePairToken);
+        }
+
+        internal static byte[] NewToken()
         {
             var token = new byte[TokenSize];
             using (var random = RandomNumberGenerator.Create())
                 random.GetBytes(token);
-            return new Invitation(endpoint, token, Protocol.Fingerprint(certificate), paired);
+            return token;
+        }
+
+        internal Invitation WithToken(byte[] token)
+        {
+            return new Invitation(Endpoint, token, Fingerprint, Paired, PrivatePairToken);
         }
 
         public override string ToString()
@@ -47,14 +62,16 @@ namespace ScreenShow
             data[5] = (byte)Endpoint.Port;
             Token.CopyTo(data, 6);
             Fingerprint.CopyTo(data, 6 + TokenSize);
-            return (Paired ? PairPrefix : Prefix) + Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            string prefix = PrivatePairToken ? PrivatePairPrefix : Paired ? PairPrefix : Prefix;
+            return prefix + Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         }
 
         internal static Invitation Parse(string text)
         {
             text = text.Trim();
             int encodedLength = (Size * 8 + 5) / 6;
-            bool paired = text.StartsWith(PairPrefix, StringComparison.Ordinal);
+            bool privatePairToken = text.StartsWith(PrivatePairPrefix, StringComparison.Ordinal);
+            bool paired = privatePairToken || text.StartsWith(PairPrefix, StringComparison.Ordinal);
             if (text.Length != Prefix.Length + encodedLength || (!paired && !text.StartsWith(Prefix, StringComparison.Ordinal)))
                 throw new FormatException("Проверьте код приглашения ScreenShow.");
 
@@ -78,7 +95,7 @@ namespace ScreenShow
             var fingerprint = new byte[FingerprintSize];
             Array.Copy(data, 6, token, 0, token.Length);
             Array.Copy(data, 6 + token.Length, fingerprint, 0, fingerprint.Length);
-            return new Invitation(new IPEndPoint(ip, port), token, fingerprint, paired);
+            return new Invitation(new IPEndPoint(ip, port), token, fingerprint, paired, privatePairToken);
         }
     }
 
@@ -89,6 +106,8 @@ namespace ScreenShow
     {
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SSH1");
         private static readonly byte[] MobileMagic = Encoding.ASCII.GetBytes("SSM1");
+        private static readonly byte[] PrivateMagic = Encoding.ASCII.GetBytes("SSW2");
+        private static readonly byte[] PrivateMobileMagic = Encoding.ASCII.GetBytes("SSM2");
         internal const int NetworkTimeout = 8000;
         internal const int MaximumFrame = 4 * 1024 * 1024;
         internal const int FrameWidth = 1600;
@@ -169,22 +188,24 @@ namespace ScreenShow
         internal static void WriteHello(SslStream stream, Invitation invitation)
         {
             var hello = new byte[Magic.Length + Invitation.TokenSize];
-            Magic.CopyTo(hello, 0);
+            (invitation.PrivatePairToken ? PrivateMagic : Magic).CopyTo(hello, 0);
             invitation.Token.CopyTo(hello, Magic.Length);
             stream.Write(hello);
         }
 
         internal static bool CheckHello(BinaryReader reader, Invitation invitation, out bool mobile)
         {
-            var token = ReadHello(reader, out mobile);
-            return token != null && Same(token, invitation.Token);
+            bool privatePairToken;
+            var token = ReadHello(reader, out mobile, out privatePairToken);
+            return token != null && privatePairToken == invitation.PrivatePairToken && Same(token, invitation.Token);
         }
 
-        internal static byte[] ReadHello(BinaryReader reader, out bool mobile)
+        internal static byte[] ReadHello(BinaryReader reader, out bool mobile, out bool privatePairToken)
         {
             var version = ReadExact(reader, Magic.Length);
-            mobile = Same(version, MobileMagic);
-            return mobile || Same(version, Magic) ? ReadExact(reader, Invitation.TokenSize) : null;
+            mobile = Same(version, MobileMagic) || Same(version, PrivateMobileMagic);
+            privatePairToken = Same(version, PrivateMagic) || Same(version, PrivateMobileMagic);
+            return mobile || privatePairToken || Same(version, Magic) ? ReadExact(reader, Invitation.TokenSize) : null;
         }
 
         internal static void WriteFrame(BinaryWriter writer, byte[] jpeg)

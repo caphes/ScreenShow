@@ -65,7 +65,7 @@ namespace ScreenShow
             {
                 using (var certificate = Protocol.MakeCertificate())
                 {
-                    var invite = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, !legacy);
+                    var invite = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, !legacy, !legacy);
                     Task worker = Task.Run(delegate
                     {
                         if (legacy)
@@ -94,6 +94,7 @@ namespace ScreenShow
                 if (reject) return;
                 if (mobile)
                 {
+                    writer.Write(Invitation.NewToken());
                     var input = InputCommand.Read(reader);
                     if (input.Kind != InputKind.Text || input.Value != 0x416)
                         throw new InvalidDataException("The Cyrillic text input packet was incorrect.");

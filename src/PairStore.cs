@@ -13,12 +13,14 @@ namespace ScreenShow
         internal readonly Invitation Invitation;
         internal readonly string Label;
         internal readonly bool Incoming;
+        internal readonly Decision Access;
 
-        internal PairedDevice(Invitation invitation, string label, bool incoming)
+        internal PairedDevice(Invitation invitation, string label, bool incoming, Decision access = Decision.View)
         {
             Invitation = invitation;
             Label = label;
             Incoming = incoming;
+            Access = access;
         }
 
         public override string ToString() { return Label; }
@@ -48,9 +50,9 @@ namespace ScreenShow
             finally { Array.Clear(identity, 0, identity.Length); }
         }
 
-        internal void SaveIncoming(Invitation invite, IPAddress address, bool mobile)
+        internal void SaveIncoming(Invitation invite, IPAddress address, bool mobile, Decision access)
         {
-            SaveDevice(new PairedDevice(invite, (mobile ? "Android · " : "Windows · ") + address, true));
+            SaveDevice(new PairedDevice(invite, (mobile ? "Android · " : "Windows · ") + address, true, access));
         }
 
         internal void SaveOutgoing(Invitation invite)
@@ -58,9 +60,16 @@ namespace ScreenShow
             SaveDevice(new PairedDevice(invite, invite.Endpoint.ToString(), false));
         }
 
-        internal bool HasIncoming(byte[] token)
+        internal PairedDevice FindIncoming(byte[] token)
         {
-            return ReadDevice(DevicePath(token, true), true) != null;
+            return ReadDevice(DevicePath(token, true), true);
+        }
+
+        internal PairedDevice ChangeAccess(PairedDevice device, Decision access)
+        {
+            var updated = new PairedDevice(device.Invitation, device.Label, true, access);
+            SaveDevice(updated, true);
+            return updated;
         }
 
         internal PairedDevice[] Devices(bool incoming)
@@ -87,11 +96,13 @@ namespace ScreenShow
             set { Save(Path.Combine(folder, "endpoint.dat"), Encoding.UTF8.GetBytes(value), true); }
         }
 
-        private void SaveDevice(PairedDevice device)
+        private void SaveDevice(PairedDevice device, bool replaceOnly = false)
         {
             string path = DevicePath(device.Incoming ? device.Invitation.Token : device.Invitation.Fingerprint,
                 device.Incoming);
-            Save(path, Encoding.UTF8.GetBytes(device.Invitation + "\n" + device.Label), true);
+            string record = device.Invitation + "\n" + device.Label + "\n" +
+                (device.Access == Decision.Control ? "control" : "view");
+            Save(path, Encoding.UTF8.GetBytes(record), true, replaceOnly);
         }
 
         private PairedDevice ReadDevice(string path, bool incoming)
@@ -99,10 +110,11 @@ namespace ScreenShow
             try
             {
                 string record = Encoding.UTF8.GetString(Load(path));
-                int split = record.IndexOf('\n');
-                if (split < 0) return null;
-                var invite = Invitation.Parse(record.Substring(0, split));
-                return new PairedDevice(invite, record.Substring(split + 1), incoming);
+                string[] fields = record.Split('\n');
+                if (fields.Length < 2) return null;
+                var invite = Invitation.Parse(fields[0]);
+                Decision access = fields.Length > 2 && fields[2] == "control" ? Decision.Control : Decision.View;
+                return new PairedDevice(invite, fields[1], incoming, access);
             }
             catch (FileNotFoundException) { return null; }
             catch (DirectoryNotFoundException) { return null; }
@@ -122,13 +134,18 @@ namespace ScreenShow
             return ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser);
         }
 
-        private void Save(string path, byte[] secret, bool overwrite)
+        private void Save(string path, byte[] secret, bool overwrite, bool replaceOnly = false)
         {
             Directory.CreateDirectory(folder);
             string temporary = Path.Combine(folder, Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
                 File.WriteAllBytes(temporary, ProtectedData.Protect(secret, null, DataProtectionScope.CurrentUser));
+                if (replaceOnly)
+                {
+                    File.Replace(temporary, path, null);
+                    return;
+                }
                 try { File.Move(temporary, path); }
                 catch (IOException)
                 {

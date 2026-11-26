@@ -39,7 +39,7 @@ namespace ScreenShow
                         stop.ThrowIfCancellationRequested();
                         listener.Start(4);
                     }
-                    var invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null);
+                    var invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null, pairs != null);
                     ready(invitation);
                     while (!stop.IsCancellationRequested)
                     {
@@ -60,9 +60,12 @@ namespace ScreenShow
                                 using (var writer = new BinaryWriter(stream))
                                 {
                                     bool mobile;
-                                    var token = Protocol.ReadHello(reader, out mobile);
-                                    bool newPair = token != null && Protocol.Same(token, invitation.Token);
-                                    valid = newPair || (token != null && pairs != null && pairs.HasIncoming(token));
+                                    bool privatePairToken;
+                                    var token = Protocol.ReadHello(reader, out mobile, out privatePairToken);
+                                    bool newPair = token != null && privatePairToken == invitation.PrivatePairToken &&
+                                        Protocol.Same(token, invitation.Token);
+                                    var device = token != null && !newPair && pairs != null ? pairs.FindIncoming(token) : null;
+                                    valid = newPair || (device != null && device.Invitation.PrivatePairToken == privatePairToken);
                                     if (!valid)
                                     {
                                         writer.Write((byte)Decision.InvalidCode);
@@ -82,7 +85,7 @@ namespace ScreenShow
                                         Decision decision;
                                         try
                                         {
-                                            decision = authorize(endpoint, waiting.Token);
+                                            decision = newPair ? authorize(endpoint, waiting.Token) : device.Access;
                                             waiting.Token.ThrowIfCancellationRequested();
                                         }
                                         catch (OperationCanceledException)
@@ -92,22 +95,31 @@ namespace ScreenShow
                                         }
                                         if (!waiting.IsCancellationRequested)
                                         {
-                                            bool approved = decision == Decision.View || decision == Decision.Control;
-                                            if (approved && !newPair && pairs != null && !pairs.HasIncoming(token))
+                                            if (!newPair)
                                             {
-                                                approved = false;
-                                                decision = Decision.InvalidCode;
+                                                device = pairs.FindIncoming(token);
+                                                decision = device == null ? Decision.InvalidCode : device.Access;
                                             }
+                                            bool approved = decision == Decision.View || decision == Decision.Control;
+                                            byte[] savedToken = token;
                                             if (approved && newPair && pairs != null)
                                             {
-                                                try { pairs.SaveIncoming(invitation, endpoint.Address, mobile); }
+                                                savedToken = Invitation.NewToken();
+                                                try { pairs.SaveIncoming(invitation.WithToken(savedToken), endpoint.Address, mobile, decision); }
                                                 catch (IOException error)
                                                 {
                                                     throw new InvalidOperationException("Не удалось сохранить привязку устройства.", error);
                                                 }
-                                                invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, true);
+                                                invitation = Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, true, true);
                                             }
-                                            writer.Write((byte)decision);
+                                            if (approved && privatePairToken)
+                                            {
+                                                var response = new byte[1 + Invitation.TokenSize];
+                                                response[0] = (byte)decision;
+                                                savedToken.CopyTo(response, 1);
+                                                writer.Write(response);
+                                            }
+                                            else writer.Write((byte)decision);
                                             if (approved)
                                             {
                                                 started(decision);
@@ -213,7 +225,7 @@ namespace ScreenShow
             this.invitation = invitation;
         }
 
-        internal void Run(Action waiting, Action<Decision> connected, Action<Bitmap> frame)
+        internal void Run(Action waiting, Action<Decision> connected, Action<Bitmap> frame, Action<Invitation> linked = null)
         {
             try
             {
@@ -236,6 +248,9 @@ namespace ScreenShow
                     if (decision != Decision.View && decision != Decision.Control)
                         throw new InvalidDataException("Получен неизвестный ответ.");
                     stream.ReadTimeout = Protocol.NetworkTimeout;
+                    var link = invitation.PrivatePairToken
+                        ? invitation.WithToken(Protocol.ReadExact(reader, Invitation.TokenSize)) : invitation;
+                    if (linked != null && link.Paired) linked(link);
                     connected(decision);
                     Task writer = decision == Decision.Control ? Task.Run(() => SendInput(stream)) : null;
                     try
