@@ -19,6 +19,7 @@ namespace ScreenShow
             internal string Name;
             internal IPAddress Address;
             internal int Priority;
+            internal bool Public;
             public override string ToString() { return Address == null ? Name : Address + "   ·   " + Name; }
         }
 
@@ -47,8 +48,14 @@ namespace ScreenShow
         private bool cancelled;
         private bool exitAfterSession;
         private string relayServer = "";
+        private string publicServer = "";
+        private readonly NotifyIcon tray;
+        private readonly ContextMenuStrip trayMenu;
+        private readonly ToolStripMenuItem stopFromTray;
+        private readonly CheckBox startup;
+        private bool changingStartup;
 
-        internal MainForm()
+        internal MainForm(bool launchAtLogin = false)
         {
             SuspendLayout();
             Text = "ScreenShow";
@@ -56,7 +63,7 @@ namespace ScreenShow
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
-            ClientSize = new Size(836, 546);
+            ClientSize = new Size(836, 576);
             AutoScaleDimensions = new SizeF(96, 96);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Background;
@@ -124,14 +131,30 @@ namespace ScreenShow
             Theme.Put(approval, Theme.Button("Отклонить", danger: true), 626, 8, 140, 32).Click +=
                 (sender, args) => Answer(Decision.Denied);
 
+            startup = Theme.Put(this, new CheckBox
+            {
+                Text = "Открывать доступ при входе в Windows",
+                ForeColor = Theme.Ink,
+                Checked = ReadStartup()
+            }, 30, 541, 560, 24);
+            startup.CheckedChanged += (sender, args) => ApplyStartup();
+            trayMenu = new ContextMenuStrip();
+            trayMenu.Items.Add("Открыть ScreenShow", null, (sender, args) => RestoreWindow());
+            stopFromTray = new ToolStripMenuItem("Остановить доступ", null, (sender, args) => StopSession());
+            trayMenu.Items.Add(stopFromTray);
+            trayMenu.Items.Add("Выход", null, (sender, args) => Close());
+            tray = new NotifyIcon { Icon = Theme.AppIcon, Text = "ScreenShow", ContextMenuStrip = trayMenu, Visible = true };
+            tray.DoubleClick += (sender, args) => RestoreWindow();
+
             foreach (var item in NetworkAddresses()) adapter.Items.Add(item);
             adapter.Items.Add(new Adapter { Name = "Интернет через сервер" });
+            adapter.Items.Add(new Adapter { Name = "Интернет напрямую", Public = true });
             if (adapter.Items.Count != 0) adapter.SelectedIndex = 0;
-            RestoreHostAddress();
+            bool savedHostAvailable = RestoreHostAddress();
             Action updateNetwork = () =>
             {
                 var selected = (Adapter)adapter.SelectedItem;
-                network.Text = selected != null && selected.Address == null ? "Интернет через сервер" : "Локальная сеть / VPN";
+                network.Text = selected != null && selected.Address == null ? selected.Name : "Локальная сеть / VPN";
                 UpdateControls();
             };
             adapter.SelectedIndexChanged += (sender, args) => updateNetwork();
@@ -152,6 +175,19 @@ namespace ScreenShow
                 }
             };
             UpdateControls();
+            if (launchAtLogin && startup.Checked)
+            {
+                Shown += (sender, args) =>
+                {
+                    if (!savedHostAvailable)
+                    {
+                        SetStatus("Автозапуск: сохранённый сетевой адрес недоступен. Выберите способ подключения.", Theme.Red);
+                        return;
+                    }
+                    WindowState = FormWindowState.Minimized;
+                    StartHost(true);
+                };
+            }
             ResumeLayout(false);
         }
 
@@ -199,13 +235,15 @@ namespace ScreenShow
             bool idle = host == null && guest == null;
             adapter.Enabled = idle;
             var network = (Adapter)adapter.SelectedItem;
-            port.Enabled = idle && network != null && network.Address != null;
+            port.Enabled = idle && network != null && (network.Address != null || network.Public);
             devices.Enabled = idle || (host != null && ownCode.TextLength != 0 && !cancelled);
             create.Enabled = idle && adapter.SelectedItem != null;
             copy.Enabled = ownCode.TextLength != 0 && !cancelled;
             stop.Enabled = !idle && !cancelled;
             otherCode.Enabled = paste.Enabled = idle;
             connect.Enabled = idle && otherCode.Text.Trim().Length != 0;
+            startup.Enabled = startup.Checked || (host != null && ownCode.TextLength != 0 && !cancelled);
+            stopFromTray.Enabled = !idle && !cancelled;
         }
 
         private void Post(Action action)
@@ -214,14 +252,22 @@ namespace ScreenShow
             catch (InvalidOperationException) { }
         }
 
-        private void StartHost()
+        private void StartHost(bool automatic = false)
         {
             var address = (Adapter)adapter.SelectedItem;
             HostSession session;
             string setting;
-            if (address.Address == null)
+            if (address.Public)
             {
-                RelayAddress relay = AskRelay();
+                NetworkAddress external = automatic ? NetworkAddress.Parse(publicServer) : AskNetworkAddress(true);
+                if (external == null) return;
+                publicServer = external.ToString();
+                setting = "public:" + publicServer + "|" + port.Value;
+                session = new HostSession(IPAddress.Any, (int)port.Value, pairs, external);
+            }
+            else if (address.Address == null)
+            {
+                NetworkAddress relay = automatic ? NetworkAddress.Parse(relayServer) : AskNetworkAddress(false);
                 if (relay == null) return;
                 relayServer = relay.ToString();
                 setting = "relay:" + relayServer;
@@ -249,8 +295,10 @@ namespace ScreenShow
                         if (hotkey) Native.UnregisterHotKey(Handle, StopHotkey);
                         hotkey = false;
                         ownCode.Text = invitation.ToString();
-                        SetStatus(invitation.Relay == null ? "Доступ открыт. Связанные устройства могут подключиться." :
-                            "Доступ через интернет открыт. Сервер-посредник подключён.", Theme.Success);
+                        SetStatus(invitation.Relay != null ? "Доступ через интернет открыт. Сервер-посредник подключён." :
+                            invitation.PublicAddress != null ? "Прямой доступ готов · " + invitation.PublicAddress :
+                            "Доступ открыт. Связанные устройства могут подключиться.", Theme.Success);
+                        tray.Text = "ScreenShow — доступ открыт";
                         UpdateControls();
                     }),
                     RequestApproval,
@@ -261,7 +309,8 @@ namespace ScreenShow
                         ownCode.Clear();
                         UpdateControls();
                         TopMost = true;
-                        WindowState = FormWindowState.Normal;
+                        RestoreWindow();
+                        tray.Text = "ScreenShow — идёт сеанс";
                         hotkey = Native.RegisterHotKey(Handle, StopHotkey, 0x4003, (uint)Keys.F12);
                         string mode = access == Decision.Control ? "Просмотр и управление" : "Только просмотр";
                         SetStatus("Экран транслируется   ·   " + mode +
@@ -276,6 +325,8 @@ namespace ScreenShow
                     hotkey = false;
                     approval.Visible = false;
                     ownCode.Clear();
+                    tray.Text = "ScreenShow — доступ закрыт";
+                    if (automatic && error != null && !cancelled) RestoreWindow();
                     Finish(error);
                 });
         }
@@ -291,8 +342,7 @@ namespace ScreenShow
                 ownCode.Clear();
                 prompt.Text = peer == null ? "Запрос на доступ через интернет" : "Запрос на доступ от " + peer.Address;
                 approval.Visible = true;
-                WindowState = FormWindowState.Normal;
-                Activate();
+                RestoreWindow();
                 SetStatus("Выбранный режим сохранится для этого устройства.", Theme.Accent);
                 UpdateControls();
             });
@@ -352,34 +402,51 @@ namespace ScreenShow
                 });
         }
 
-        private void RestoreHostAddress()
+        private bool RestoreHostAddress()
         {
             try
             {
                 string saved = pairs.HostAddress;
                 if (saved.StartsWith("relay:", StringComparison.Ordinal))
                 {
-                    relayServer = saved.Substring(6);
+                    relayServer = NetworkAddress.Parse(saved.Substring(6)).ToString();
+                    adapter.SelectedIndex = adapter.Items.Count - 2;
+                    return true;
+                }
+                if (saved.StartsWith("public:", StringComparison.Ordinal))
+                {
+                    string[] settings = saved.Substring(7).Split('|');
+                    int local;
+                    if (settings.Length != 2 || !int.TryParse(settings[1], out local) ||
+                        local < port.Minimum || local > port.Maximum) return false;
+                    publicServer = NetworkAddress.Parse(settings[0]).ToString();
+                    port.Value = local;
                     adapter.SelectedIndex = adapter.Items.Count - 1;
-                    return;
+                    return true;
                 }
                 string[] endpoint = saved.Split(':');
                 int value;
                 if (endpoint.Length != 2 || !int.TryParse(endpoint[1], out value) ||
-                    value < port.Minimum || value > port.Maximum) return;
+                    value < port.Minimum || value > port.Maximum) return false;
                 port.Value = value;
                 foreach (Adapter item in adapter.Items)
-                    if (item.Address != null && item.Address.ToString() == endpoint[0]) { adapter.SelectedItem = item; break; }
+                    if (item.Address != null && item.Address.ToString() == endpoint[0])
+                    {
+                        adapter.SelectedItem = item;
+                        return true;
+                    }
             }
             catch (IOException) { }
             catch (System.Security.Cryptography.CryptographicException) { }
+            catch (FormatException) { }
+            return false;
         }
 
-        private RelayAddress AskRelay()
+        private NetworkAddress AskNetworkAddress(bool direct)
         {
             using (var dialog = new Form())
             {
-                dialog.Text = "Подключение через интернет";
+                dialog.Text = direct ? "Прямое подключение через интернет" : "Подключение через интернет";
                 dialog.Icon = Theme.AppIcon;
                 dialog.StartPosition = FormStartPosition.CenterParent;
                 dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -387,23 +454,26 @@ namespace ScreenShow
                 dialog.ClientSize = new Size(448, 205);
                 dialog.BackColor = Theme.Background;
                 var card = Theme.Put(dialog, Theme.Card(), 14, 14, 420, 177);
-                Theme.Put(card, Theme.Label("Адрес сервера-посредника", 12, bold: true), 15, 13, 390, 24);
+                string label = direct ? "Публичный адрес и внешний порт" : "Адрес сервера-посредника";
+                Theme.Put(card, Theme.Label(label, 12, bold: true), 15, 13, 390, 24);
                 var field = Theme.CodeField(card, 15, 43, 390, 38);
-                field.AccessibleName = "Адрес сервера-посредника";
-                field.Text = relayServer;
-                var hint = Theme.Put(card, Theme.Label("Введите публичное имя или IP и порт, например relay.example.org:47211.",
+                field.AccessibleName = label;
+                field.Text = direct ? publicServer : relayServer;
+                string description = direct ? "Укажите публичный IPv4 или DDNS в формате имя:порт. Настройте переадресацию TCP на порт " + port.Value + "." :
+                    "Введите публичное имя или IP и порт, например relay.example.org:47211.";
+                var hint = Theme.Put(card, Theme.Label(description,
                     9.5f, Theme.Muted), 15, 90, 390, 34);
                 var confirm = Theme.Put(card, Theme.Button("Открыть доступ", true), 15, 129, 180, 35);
                 var cancel = Theme.Put(card, Theme.Button("Отмена"), 203, 129, 96, 35);
                 cancel.DialogResult = DialogResult.Cancel;
                 dialog.AcceptButton = confirm;
                 dialog.CancelButton = cancel;
-                RelayAddress relay = null;
+                NetworkAddress relay = null;
                 confirm.Click += (sender, args) =>
                 {
                     try
                     {
-                        relay = RelayAddress.Parse(field.Text);
+                        relay = NetworkAddress.Parse(field.Text);
                         dialog.Close();
                     }
                     catch (FormatException error) { hint.Text = error.Message; hint.ForeColor = Theme.Red; }
@@ -411,6 +481,41 @@ namespace ScreenShow
                 dialog.ShowDialog(this);
                 return relay;
             }
+        }
+
+        private static bool ReadStartup()
+        {
+            try { return StartupRegistration.IsEnabled(); }
+            catch (UnauthorizedAccessException) { return false; }
+            catch (System.Security.SecurityException) { return false; }
+            catch (IOException) { return false; }
+        }
+
+        private void ApplyStartup()
+        {
+            if (changingStartup) return;
+            try
+            {
+                StartupRegistration.SetEnabled(startup.Checked);
+                SetStatus(startup.Checked ? "Доступ будет открываться при входе в Windows." : "Автозапуск отключён.", Theme.Success);
+            }
+            catch (Exception error)
+            {
+                if (!(error is UnauthorizedAccessException) && !(error is System.Security.SecurityException) &&
+                    !(error is IOException) && !(error is InvalidOperationException)) throw;
+                changingStartup = true;
+                startup.Checked = ReadStartup();
+                changingStartup = false;
+                SetStatus(error.Message, Theme.Red);
+            }
+            UpdateControls();
+        }
+
+        private void RestoreWindow()
+        {
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
         }
 
         private void ShowDevices()
@@ -552,6 +657,17 @@ namespace ScreenShow
                 e.Cancel = true;
                 exitAfterSession = true;
             }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && tray != null)
+            {
+                tray.Visible = false;
+                tray.Dispose();
+                trayMenu.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 }

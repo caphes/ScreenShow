@@ -9,6 +9,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -51,7 +52,8 @@ final class RemoteSession {
 
         static Invitation parse(String value) {
             String code = value.trim();
-            if (code.startsWith("SSR-")) return parseRelay(code);
+            if (code.startsWith("SSR-")) return parseNetwork(code, true);
+            if (code.startsWith("SSI-")) return parseNetwork(code, false);
             if ((!code.startsWith("SS1-") && !code.startsWith("SS2-") && !code.startsWith("SS3-")) || code.length() != 87)
                 throw new IllegalArgumentException("Вставьте приглашение ScreenShow.");
             byte[] data;
@@ -74,35 +76,41 @@ final class RemoteSession {
             }
         }
 
-        private static Invitation parseRelay(String code) {
+        private static Invitation parseNetwork(String code, boolean relayed) {
             if (code.length() > 256) throw new IllegalArgumentException("Слишком длинный код приглашения.");
             byte[] data = Base64.getUrlDecoder().decode(code.substring(4));
-            if (data.length < 91 || data.length > 186) throw new IllegalArgumentException("Неверный код подключения через интернет.");
+            int tokenOffset = relayed ? 34 : 2;
+            int fingerprintOffset = tokenOffset + 24;
+            int header = fingerprintOffset + 32;
+            if (data.length <= header || data.length > header + 96)
+                throw new IllegalArgumentException("Неверный код подключения через интернет.");
             int port = (data[0] & 255) * 256 + (data[1] & 255);
-            String host = new String(data, 90, data.length - 90, StandardCharsets.US_ASCII);
+            String host = new String(data, header, data.length - header, StandardCharsets.US_ASCII);
             if (port == 0 || !host.matches("[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"))
                 throw new IllegalArgumentException("В приглашении указан недопустимый адрес сервера.");
-            return new Invitation(InetSocketAddress.createUnresolved(host, port), Arrays.copyOfRange(data, 34, 58),
-                Arrays.copyOfRange(data, 58, 90), Arrays.copyOfRange(data, 2, 34), code);
+            return new Invitation(InetSocketAddress.createUnresolved(host, port), Arrays.copyOfRange(data, tokenOffset, fingerprintOffset),
+                Arrays.copyOfRange(data, fingerprintOffset, header), relayed ? Arrays.copyOfRange(data, 2, 34) : null, code);
         }
 
         boolean canSave() { return code.startsWith("SS2-") || privatePairToken(); }
 
-        boolean privatePairToken() { return route != null || code.startsWith("SS3-"); }
+        boolean privatePairToken() { return address.isUnresolved() || code.startsWith("SS3-"); }
 
         Invitation withToken(byte[] secret) {
             byte[] data = Base64.getUrlDecoder().decode(code.substring(4));
-            System.arraycopy(secret, 0, data, route == null ? 6 : 34, token.length);
+            System.arraycopy(secret, 0, data, route != null ? 34 : address.isUnresolved() ? 2 : 6, token.length);
             return new Invitation(address, secret, fingerprint, route,
                 code.substring(0, 4) + Base64.getUrlEncoder().withoutPadding().encodeToString(data));
         }
 
         String deviceKey() {
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint) + (route == null ? "" : "-relay");
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint) +
+                (route != null ? "-relay" : address.isUnresolved() ? "-public" : "");
         }
 
         String displayAddress() {
-            if (route == null) return address.getAddress().getHostAddress() + ":" + address.getPort();
+            if (route == null) return address.isUnresolved() ? "Напрямую · " + address.getHostString() + ":" + address.getPort() :
+                address.getAddress().getHostAddress() + ":" + address.getPort();
             return "Интернет · " + address.getHostString() + " · " + deviceKey().substring(0, 6);
         }
     }
@@ -192,9 +200,7 @@ final class RemoteSession {
                 socket = transport;
             }
             try {
-                InetSocketAddress endpoint = invitation.route == null ? invitation.address :
-                    new InetSocketAddress(invitation.address.getHostString(), invitation.address.getPort());
-                transport.connect(endpoint, TIMEOUT);
+                transport.connect(resolveEndpoint(), TIMEOUT);
             } catch (SocketTimeoutException failure) {
                 throw failure;
             } catch (IOException failure) {
@@ -241,6 +247,15 @@ final class RemoteSession {
                 while (true) listener.frame(readFrame(input));
             }
         }
+    }
+
+    private InetSocketAddress resolveEndpoint() throws UnknownHostException {
+        if (!invitation.address.isUnresolved()) return invitation.address;
+        for (InetAddress candidate : InetAddress.getAllByName(invitation.address.getHostString())) {
+            if (candidate.getAddress().length == 4)
+                return new InetSocketAddress(candidate, invitation.address.getPort());
+        }
+        throw new UnknownHostException(invitation.address.getHostString());
     }
 
     private void joinRelay(Socket transport) throws IOException {

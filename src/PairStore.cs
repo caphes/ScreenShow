@@ -84,7 +84,7 @@ namespace ScreenShow
         internal void Remove(PairedDevice device)
         {
             File.Delete(DevicePath(device.Incoming ? device.Invitation.Token : device.Invitation.Fingerprint,
-                device.Incoming, device.Invitation.Relay != null));
+                device.Incoming, device.Invitation.NetworkMode));
         }
 
         internal string HostAddress
@@ -115,7 +115,7 @@ namespace ScreenShow
         private void SaveDevice(PairedDevice device, bool replaceOnly = false)
         {
             string path = DevicePath(device.Incoming ? device.Invitation.Token : device.Invitation.Fingerprint,
-                device.Incoming, device.Invitation.Relay != null);
+                device.Incoming, device.Invitation.NetworkMode);
             string record = device.Invitation + "\n" + device.Label + "\n" +
                 (device.Access == Decision.Control ? "control" : "view");
             Save(path, Encoding.UTF8.GetBytes(record), true, replaceOnly);
@@ -138,10 +138,10 @@ namespace ScreenShow
             catch (FormatException) { return null; }
         }
 
-        private string DevicePath(byte[] key, bool incoming, bool relay = false)
+        private string DevicePath(byte[] key, bool incoming, string mode = "")
         {
             using (var hash = SHA256.Create())
-                return Path.Combine(folder, (incoming ? "in-" : relay ? "out-relay-" : "out-") +
+                return Path.Combine(folder, (incoming ? "in-" : mode.Length == 0 ? "out-" : "out-" + mode + "-") +
                     BitConverter.ToString(hash.ComputeHash(key)).Replace("-", "") + ".dat");
         }
 

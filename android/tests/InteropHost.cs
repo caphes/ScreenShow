@@ -24,12 +24,56 @@ namespace ScreenShow
                 ProtocolFixture(run, false);
                 ProtocolFixture(run, true);
                 RelayFixture(run);
+                CheckPublic(run);
                 return 0;
             }
             catch (Exception error)
             {
                 Console.Error.WriteLine(error);
                 return 1;
+            }
+        }
+
+        private static void CheckPublic(Action<Invitation, string> run)
+        {
+            var reserve = new TcpListener(IPAddress.Loopback, 0);
+            reserve.Start();
+            int port = ((IPEndPoint)reserve.LocalEndpoint).Port;
+            reserve.Stop();
+            var address = NetworkAddress.Parse("127.0.0.1:" + port);
+            string folder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "public-pairs");
+            var store = new PairStore(folder);
+            using (var ready = new BlockingCollection<Invitation>())
+            {
+                var host = new HostSession(IPAddress.Loopback, port, store, address);
+                int approvals = 0;
+                Task worker = Task.Run(() => host.Run(ready.Add, (endpoint, cancellation) =>
+                {
+                    if (endpoint == null) throw new InvalidOperationException("Unexpected relay.");
+                    approvals++;
+                    return Decision.View;
+                }, decision => { }));
+                try
+                {
+                    Invitation code;
+                    if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Direct listener did not start.");
+                    code = Invitation.Parse(code.ToString());
+                    if (code.Endpoint != null || code.PublicAddress == null || code.Relay != null)
+                        throw new InvalidOperationException("Direct Internet invitation did not round trip.");
+                    var linked = ViewNetwork(code);
+                    if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Missing Android invitation.");
+                    run(code, "public");
+                    if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Direct listener failed after Android.");
+                    ViewNetwork(linked);
+                    if (approvals != 2) throw new InvalidOperationException("The direct reconnect asked for approval.");
+                    Console.WriteLine("PASS: direct Internet protocol on Windows and Android, including trusted reconnect");
+                }
+                catch
+                {
+                    if (worker.IsFaulted) worker.GetAwaiter().GetResult();
+                    throw;
+                }
+                finally { StopHostAndClean(host, worker, folder); }
             }
         }
 
@@ -52,7 +96,7 @@ namespace ScreenShow
                     const string prefix = "ScreenShow relay listening on ";
                     if (!line.Wait(Timeout) || line.Result == null || !line.Result.StartsWith(prefix, StringComparison.Ordinal))
                         throw new InvalidOperationException("The relay did not start.");
-                    CheckRelay(RelayAddress.Parse(line.Result.Substring(prefix.Length)), run);
+                    CheckRelay(NetworkAddress.Parse(line.Result.Substring(prefix.Length)), run);
                 }
                 finally
                 {
@@ -62,7 +106,7 @@ namespace ScreenShow
             }
         }
 
-        private static void CheckRelay(RelayAddress address, Action<Invitation, string> run)
+        private static void CheckRelay(NetworkAddress address, Action<Invitation, string> run)
         {
             string folder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "relay-pairs");
             var store = new PairStore(folder);
@@ -87,11 +131,11 @@ namespace ScreenShow
                         catch (InvalidOperationException) { refused = true; }
                         if (!refused) throw new InvalidOperationException("The relay accepted an unregistered route.");
                     }
-                    var linked = ViewViaRelay(Invitation.Parse(code.ToString()));
+                    var linked = ViewNetwork(Invitation.Parse(code.ToString()));
                     if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Windows did not return to the relay.");
                     run(code, "relay");
                     if (!ready.TryTake(out code, Timeout)) throw new TimeoutException("Windows did not return after Android.");
-                    ViewViaRelay(linked);
+                    ViewNetwork(linked);
                     if (approvals != 2) throw new InvalidOperationException("The relayed reconnect asked for approval.");
                     Console.WriteLine("PASS: Windows and Android through relay, including discovery and trusted reconnect");
                 }
@@ -100,26 +144,34 @@ namespace ScreenShow
                     if (worker.IsFaulted) worker.GetAwaiter().GetResult();
                     throw;
                 }
-                finally
+                finally { StopHostAndClean(host, worker, folder); }
+            }
+        }
+
+        private static void StopHostAndClean(HostSession host, Task worker, string folder)
+        {
+            host.Stop();
+            try
+            {
+                if (!worker.Wait(Timeout)) throw new TimeoutException("The host did not stop.");
+            }
+            catch (AggregateException error)
+            {
+                if (!(error.GetBaseException() is IOException) && !(error.GetBaseException() is ObjectDisposedException)
+                    && !(error.GetBaseException() is SocketException) && !(error.GetBaseException() is OperationCanceledException))
+                    throw;
+            }
+            finally
+            {
+                if (Directory.Exists(folder))
                 {
-                    host.Stop();
-                    try { worker.Wait(Timeout); }
-                    catch (AggregateException error)
-                    {
-                        if (!(error.GetBaseException() is IOException) && !(error.GetBaseException() is ObjectDisposedException)
-                            && !(error.GetBaseException() is SocketException) && !(error.GetBaseException() is OperationCanceledException))
-                            throw;
-                    }
-                    if (Directory.Exists(folder))
-                    {
-                        foreach (string file in Directory.GetFiles(folder)) File.Delete(file);
-                        Directory.Delete(folder);
-                    }
+                    foreach (string file in Directory.GetFiles(folder)) File.Delete(file);
+                    Directory.Delete(folder);
                 }
             }
         }
 
-        private static Invitation ViewViaRelay(Invitation code)
+        private static Invitation ViewNetwork(Invitation code)
         {
             var viewer = new ViewerSession(code);
             Invitation linked = null;
@@ -128,7 +180,7 @@ namespace ScreenShow
             {
                 viewer.Run(() => { }, decision =>
                 {
-                    if (decision != Decision.View) throw new InvalidOperationException("Wrong relayed permission.");
+                    if (decision != Decision.View) throw new InvalidOperationException("Wrong permission.");
                 }, image =>
                 {
                     using (image) seen = image.Width > 0;
@@ -137,8 +189,8 @@ namespace ScreenShow
             }
             catch (IOException) { if (!seen) throw; }
             catch (ObjectDisposedException) { if (!seen) throw; }
-            if (!seen || linked == null || linked.Relay == null)
-                throw new InvalidOperationException("No relayed frame or saved pairing.");
+            if (!seen || linked == null || linked.NetworkMode != code.NetworkMode)
+                throw new InvalidOperationException("No frame or saved pairing in the selected mode.");
             return linked;
         }
 

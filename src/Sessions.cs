@@ -17,17 +17,19 @@ namespace ScreenShow
         private readonly object gate = new object();
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private readonly PairStore pairs;
-        private readonly RelayAddress relay;
+        private readonly NetworkAddress relay;
+        private readonly NetworkAddress publicAddress;
         private TcpClient peer;
 
-        internal HostSession(IPAddress address, int port, PairStore pairs = null)
+        internal HostSession(IPAddress address, int port, PairStore pairs = null, NetworkAddress publicAddress = null)
         {
             listener = new TcpListener(address, port);
             listener.ExclusiveAddressUse = true;
             this.pairs = pairs;
+            this.publicAddress = publicAddress;
         }
 
-        internal HostSession(RelayAddress relay, PairStore pairs)
+        internal HostSession(NetworkAddress relay, PairStore pairs)
         {
             this.relay = relay;
             this.pairs = pairs;
@@ -48,9 +50,9 @@ namespace ScreenShow
                         if (listener != null) listener.Start(4);
                     }
                     if (relay != null) relayKey = pairs.GetRelayKey();
-                    var invitation = relay == null
-                        ? Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null, pairs != null)
-                        : Invitation.CreateRelay(relay, RelayTransport.Route(relayKey), certificate);
+                    var invitation = relay != null ? Invitation.CreateRelay(relay, RelayTransport.Route(relayKey), certificate)
+                        : publicAddress != null ? Invitation.CreatePublic(publicAddress, certificate)
+                        : Invitation.Create((IPEndPoint)listener.LocalEndpoint, certificate, pairs != null, pairs != null);
                     if (relay == null) ready(invitation);
                     while (!stop.IsCancellationRequested)
                     {
@@ -85,7 +87,7 @@ namespace ScreenShow
                                         Protocol.Same(token, invitation.Token);
                                     var device = token != null && !newPair && pairs != null ? pairs.FindIncoming(token) : null;
                                     valid = newPair || (device != null && device.Invitation.PrivatePairToken == privatePairToken &&
-                                        (device.Invitation.Relay == null) == (relay == null));
+                                        device.Invitation.NetworkMode == invitation.NetworkMode);
                                     if (!valid)
                                     {
                                         writer.Write((byte)Decision.InvalidCode);
@@ -254,7 +256,9 @@ namespace ScreenShow
                     RelayTransport.Connect(client, invitation.Relay, invitation.Route, false);
                 else
                 {
-                    Task connection = client.ConnectAsync(invitation.Endpoint.Address, invitation.Endpoint.Port);
+                    Task connection = invitation.PublicAddress == null
+                        ? client.ConnectAsync(invitation.Endpoint.Address, invitation.Endpoint.Port)
+                        : client.ConnectAsync(invitation.PublicAddress.Host, invitation.PublicAddress.Port);
                     if (!connection.Wait(Protocol.NetworkTimeout))
                     {
                         connection.ContinueWith(task => { var exception = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted);

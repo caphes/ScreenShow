@@ -7,26 +7,26 @@ using System.Threading.Tasks;
 
 namespace ScreenShow
 {
-    internal sealed class RelayAddress
+    internal sealed class NetworkAddress
     {
         internal readonly string Host;
         internal readonly int Port;
 
-        private RelayAddress(string host, int port)
+        private NetworkAddress(string host, int port)
         {
             Host = host;
             Port = port;
         }
 
-        internal static RelayAddress Parse(string value)
+        internal static NetworkAddress Parse(string value)
         {
             string[] parts = value.Trim().Split(':');
             int port;
             if (parts.Length != 2 || !int.TryParse(parts[1], out port) || port < 1 || port > 65535 ||
                 parts[0].Length < 1 || parts[0].Length > 96 ||
                 !System.Text.RegularExpressions.Regex.IsMatch(parts[0], @"\A[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\z"))
-                throw new FormatException("Укажите адрес сервера в формате имя:порт.");
-            return new RelayAddress(parts[0].ToLowerInvariant(), port);
+                throw new FormatException("Укажите адрес и порт в формате имя:порт.");
+            return new NetworkAddress(parts[0].ToLowerInvariant(), port);
         }
 
         public override string ToString() { return Host + ":" + Port; }
@@ -42,7 +42,7 @@ namespace ScreenShow
             using (var sha = SHA256.Create()) return sha.ComputeHash(key);
         }
 
-        internal static void Connect(TcpClient client, RelayAddress address, byte[] key, bool host)
+        internal static void Connect(TcpClient client, NetworkAddress address, byte[] key, bool host)
         {
             Task connection = client.ConnectAsync(address.Host, address.Port);
             if (!connection.Wait(Protocol.NetworkTimeout))

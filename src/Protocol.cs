@@ -17,24 +17,29 @@ namespace ScreenShow
         private const string PairPrefix = "SS2-";
         private const string PrivatePairPrefix = "SS3-";
         private const string RelayPrefix = "SSR-";
+        private const string PublicPrefix = "SSI-";
         internal const int TokenSize = 24;
         internal const int FingerprintSize = 32;
         private const int Size = 4 + 2 + TokenSize + FingerprintSize;
-        private const int RelayHeader = 2 + RelayTransport.KeySize + TokenSize + FingerprintSize;
+        private const int NetworkHeader = 2 + TokenSize + FingerprintSize;
         internal readonly IPEndPoint Endpoint;
         internal readonly byte[] Token;
         internal readonly byte[] Fingerprint;
         internal readonly bool Paired;
         internal readonly bool PrivatePairToken;
-        internal readonly RelayAddress Relay;
+        internal readonly NetworkAddress Relay;
+        internal readonly NetworkAddress PublicAddress;
         internal readonly byte[] Route;
+
+        internal string NetworkMode { get { return Relay != null ? "relay" : PublicAddress != null ? "public" : ""; } }
 
         internal string DisplayAddress
         {
             get
             {
-                return Relay == null ? Endpoint.ToString() : "Интернет · " + Relay.Host + " · " +
+                if (Relay != null) return "Интернет · " + Relay.Host + " · " +
                     BitConverter.ToString(Fingerprint, 0, 3).Replace("-", "");
+                return PublicAddress == null ? Endpoint.ToString() : "Напрямую · " + PublicAddress;
             }
         }
 
@@ -48,18 +53,24 @@ namespace ScreenShow
             PrivatePairToken = privatePairToken;
         }
 
-        private Invitation(RelayAddress relay, byte[] route, byte[] token, byte[] fingerprint)
+        private Invitation(NetworkAddress address, byte[] route, byte[] token, byte[] fingerprint)
         {
-            Relay = relay;
+            PublicAddress = route == null ? address : null;
+            Relay = route == null ? null : address;
             Route = route;
             Token = token;
             Fingerprint = fingerprint;
             Paired = PrivatePairToken = true;
         }
 
-        internal static Invitation CreateRelay(RelayAddress relay, byte[] route, X509Certificate2 certificate)
+        internal static Invitation CreateRelay(NetworkAddress relay, byte[] route, X509Certificate2 certificate)
         {
             return new Invitation(relay, route, NewToken(), Protocol.Fingerprint(certificate));
+        }
+
+        internal static Invitation CreatePublic(NetworkAddress address, X509Certificate2 certificate)
+        {
+            return new Invitation(address, null, NewToken(), Protocol.Fingerprint(certificate));
         }
 
         internal static Invitation Create(IPEndPoint endpoint, X509Certificate2 certificate, bool paired = false,
@@ -78,23 +89,26 @@ namespace ScreenShow
 
         internal Invitation WithToken(byte[] token)
         {
-            return Relay == null ? new Invitation(Endpoint, token, Fingerprint, Paired, PrivatePairToken) :
-                new Invitation(Relay, Route, token, Fingerprint);
+            return Endpoint != null ? new Invitation(Endpoint, token, Fingerprint, Paired, PrivatePairToken) :
+                new Invitation(Relay ?? PublicAddress, Route, token, Fingerprint);
         }
 
         public override string ToString()
         {
-            if (Relay != null)
+            if (Endpoint == null)
             {
-                byte[] host = Encoding.ASCII.GetBytes(Relay.Host);
-                var relayed = new byte[RelayHeader + host.Length];
-                relayed[0] = (byte)(Relay.Port >> 8);
-                relayed[1] = (byte)Relay.Port;
-                Route.CopyTo(relayed, 2);
-                Token.CopyTo(relayed, 2 + RelayTransport.KeySize);
-                Fingerprint.CopyTo(relayed, 2 + RelayTransport.KeySize + TokenSize);
-                host.CopyTo(relayed, RelayHeader);
-                return RelayPrefix + Encode(relayed);
+                NetworkAddress address = Relay ?? PublicAddress;
+                int routeSize = Route == null ? 0 : Route.Length;
+                int header = NetworkHeader + routeSize;
+                byte[] host = Encoding.ASCII.GetBytes(address.Host);
+                var network = new byte[header + host.Length];
+                network[0] = (byte)(address.Port >> 8);
+                network[1] = (byte)address.Port;
+                if (Route != null) Route.CopyTo(network, 2);
+                Token.CopyTo(network, 2 + routeSize);
+                Fingerprint.CopyTo(network, 2 + routeSize + TokenSize);
+                host.CopyTo(network, header);
+                return (Route == null ? PublicPrefix : RelayPrefix) + Encode(network);
             }
             var data = new byte[Size];
             Endpoint.Address.GetAddressBytes().CopyTo(data, 0);
@@ -120,7 +134,8 @@ namespace ScreenShow
         internal static Invitation Parse(string text)
         {
             text = text.Trim();
-            if (text.StartsWith(RelayPrefix, StringComparison.Ordinal)) return ParseRelay(text);
+            if (text.StartsWith(RelayPrefix, StringComparison.Ordinal)) return ParseNetwork(text, true);
+            if (text.StartsWith(PublicPrefix, StringComparison.Ordinal)) return ParseNetwork(text, false);
             int encodedLength = (Size * 8 + 5) / 6;
             bool privatePairToken = text.StartsWith(PrivatePairPrefix, StringComparison.Ordinal);
             bool paired = privatePairToken || text.StartsWith(PairPrefix, StringComparison.Ordinal);
@@ -150,20 +165,22 @@ namespace ScreenShow
             return new Invitation(new IPEndPoint(ip, port), token, fingerprint, paired, privatePairToken);
         }
 
-        private static Invitation ParseRelay(string text)
+        private static Invitation ParseNetwork(string text, bool relayed)
         {
             if (text.Length > 256) throw new FormatException("Слишком длинный код приглашения.");
             byte[] data = Decode(text);
-            if (data.Length <= RelayHeader || data.Length > RelayHeader + 96)
+            int routeSize = relayed ? RelayTransport.KeySize : 0;
+            int header = NetworkHeader + routeSize;
+            if (data.Length <= header || data.Length > header + 96)
                 throw new FormatException("Неверный код подключения через интернет.");
             int port = (data[0] << 8) | data[1];
-            var address = RelayAddress.Parse(Encoding.ASCII.GetString(data, RelayHeader, data.Length - RelayHeader) + ":" + port);
-            var route = new byte[RelayTransport.KeySize];
+            var address = NetworkAddress.Parse(Encoding.ASCII.GetString(data, header, data.Length - header) + ":" + port);
+            var route = relayed ? new byte[routeSize] : null;
             var token = new byte[TokenSize];
             var fingerprint = new byte[FingerprintSize];
-            Array.Copy(data, 2, route, 0, route.Length);
-            Array.Copy(data, 2 + route.Length, token, 0, token.Length);
-            Array.Copy(data, 2 + route.Length + token.Length, fingerprint, 0, fingerprint.Length);
+            if (route != null) Array.Copy(data, 2, route, 0, routeSize);
+            Array.Copy(data, 2 + routeSize, token, 0, token.Length);
+            Array.Copy(data, 2 + routeSize + token.Length, fingerprint, 0, fingerprint.Length);
             return new Invitation(address, route, token, fingerprint);
         }
     }
